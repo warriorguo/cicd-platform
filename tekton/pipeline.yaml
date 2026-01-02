@@ -1,0 +1,277 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: cicd-build-deploy
+  namespace: cicd-runners
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL
+    - name: git-revision
+      type: string
+      description: Git revision (branch/commit)
+      default: main
+    - name: dockerfile-path
+      type: string
+      description: Path to Dockerfile
+      default: Dockerfile
+    - name: context-path
+      type: string
+      description: Build context path
+      default: .
+    - name: image-repo
+      type: string
+      description: Container image repository
+    - name: image-tag
+      type: string
+      description: Container image tag
+    - name: deploy-namespace
+      type: string
+      description: Deployment target namespace
+    - name: deploy-name
+      type: string
+      description: Deployment name
+    - name: git-secret
+      type: string
+      description: Git credentials secret
+      default: ""
+    - name: registry-secret
+      type: string
+      description: Registry credentials secret
+      default: ""
+
+  workspaces:
+    - name: source-ws
+      description: Workspace for source code
+
+  tasks:
+    - name: git-clone
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      workspaces:
+        - name: output
+          workspace: source-ws
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+
+    - name: validate-dockerfile
+      runAfter:
+        - git-clone
+      taskRef:
+        name: validate-dockerfile
+      workspaces:
+        - name: source
+          workspace: source-ws
+      params:
+        - name: dockerfile-path
+          value: $(params.dockerfile-path)
+        - name: context-path
+          value: $(params.context-path)
+
+    - name: kaniko-build
+      runAfter:
+        - validate-dockerfile
+      taskRef:
+        name: kaniko-build
+      workspaces:
+        - name: source
+          workspace: source-ws
+      params:
+        - name: IMAGE
+          value: $(params.image-repo):$(params.image-tag)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.context-path)
+        - name: EXTRA_ARGS
+          value:
+            - --cache=true
+            - --cache-ttl=24h
+
+    - name: kubectl-deploy
+      runAfter:
+        - kaniko-build
+      taskRef:
+        name: kubectl-deploy
+      params:
+        - name: image
+          value: $(params.image-repo):$(params.image-tag)
+        - name: namespace
+          value: $(params.deploy-namespace)
+        - name: deployment
+          value: $(params.deploy-name)
+
+    - name: verify-deployment
+      runAfter:
+        - kubectl-deploy
+      taskRef:
+        name: verify-deployment
+      params:
+        - name: namespace
+          value: $(params.deploy-namespace)
+        - name: deployment
+          value: $(params.deploy-name)
+        - name: timeout
+          value: "300s"
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: validate-dockerfile
+  namespace: cicd-runners
+spec:
+  params:
+    - name: dockerfile-path
+      type: string
+      default: Dockerfile
+    - name: context-path
+      type: string
+      default: .
+  workspaces:
+    - name: source
+  steps:
+    - name: validate
+      image: alpine:latest
+      workingDir: $(workspaces.source.path)/$(params.context-path)
+      script: |
+        #!/bin/sh
+        set -e
+        
+        DOCKERFILE_PATH="$(params.dockerfile-path)"
+        
+        echo "Checking for Dockerfile at: $DOCKERFILE_PATH"
+        
+        if [ ! -f "$DOCKERFILE_PATH" ]; then
+          echo "ERROR: Dockerfile not found at $DOCKERFILE_PATH"
+          echo "Available files:"
+          ls -la
+          exit 1
+        fi
+        
+        echo "✅ Dockerfile found at $DOCKERFILE_PATH"
+        echo "Dockerfile contents preview:"
+        head -10 "$DOCKERFILE_PATH"
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: kaniko-build
+  namespace: cicd-runners
+spec:
+  params:
+    - name: IMAGE
+      description: Name (reference) of the image to build.
+    - name: DOCKERFILE
+      description: Path to the Dockerfile to build.
+      default: Dockerfile
+    - name: CONTEXT
+      description: The build context used by Kaniko.
+      default: .
+    - name: EXTRA_ARGS
+      type: array
+      default: []
+    - name: BUILDER_IMAGE
+      description: The image on which builds will run
+      default: gcr.io/kaniko-project/executor:v1.9.1
+  workspaces:
+    - name: source
+      description: Holds the context and Dockerfile
+  results:
+    - name: IMAGE_DIGEST
+      description: Digest of the image just built.
+    - name: IMAGE_URL
+      description: URL of the image just built.
+  steps:
+    - name: build-and-push
+      workingDir: $(workspaces.source.path)/$(params.CONTEXT)
+      image: $(params.BUILDER_IMAGE)
+      args:
+        - $(params.EXTRA_ARGS)
+        - --dockerfile=$(params.DOCKERFILE)
+        - --context=dir://$(workspaces.source.path)/$(params.CONTEXT)
+        - --destination=$(params.IMAGE)
+        - --digest-file=$(results.IMAGE_DIGEST.path)
+        - --oci-layout-path=$(workspaces.source.path)/image-digest
+      securityContext:
+        runAsUser: 0
+      env:
+        - name: DOCKER_CONFIG
+          value: /kaniko/.docker
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: kubectl-deploy
+  namespace: cicd-runners
+spec:
+  params:
+    - name: image
+      description: Reference of the image to deploy.
+    - name: namespace
+      description: Namespace to deploy to.
+    - name: deployment
+      description: Name of the deployment to update.
+  steps:
+    - name: update-deployment
+      image: bitnami/kubectl:latest
+      script: |
+        #!/bin/bash
+        set -e
+        
+        echo "Updating deployment $(params.deployment) in namespace $(params.namespace)"
+        echo "New image: $(params.image)"
+        
+        kubectl patch deployment $(params.deployment) \
+          -n $(params.namespace) \
+          -p '{"spec":{"template":{"spec":{"containers":[{"name":"app","image":"$(params.image)"}]}}}}'
+        
+        echo "✅ Deployment updated successfully"
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: verify-deployment
+  namespace: cicd-runners
+spec:
+  params:
+    - name: namespace
+      description: Namespace where deployment is located.
+    - name: deployment
+      description: Name of the deployment to verify.
+    - name: timeout
+      description: Timeout for rollout status check.
+      default: "300s"
+  steps:
+    - name: wait-for-rollout
+      image: bitnami/kubectl:latest
+      script: |
+        #!/bin/bash
+        set -e
+        
+        echo "Waiting for rollout to complete..."
+        echo "Deployment: $(params.deployment)"
+        echo "Namespace: $(params.namespace)"
+        echo "Timeout: $(params.timeout)"
+        
+        kubectl rollout status deployment/$(params.deployment) \
+          -n $(params.namespace) \
+          --timeout=$(params.timeout)
+        
+        echo "✅ Deployment rollout completed successfully"
+        
+        echo "Current deployment status:"
+        kubectl get deployment $(params.deployment) -n $(params.namespace)
+        
+        echo "Pod status:"
+        kubectl get pods -n $(params.namespace) -l app=$(params.deployment)

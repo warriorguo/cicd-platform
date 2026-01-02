@@ -1,0 +1,49 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cicd-platform-ingress
+  namespace: cicd-system
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # Add these for WebSocket support
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+  - host: cicd.local  # Change this to your domain
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: cicd-backend
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: cicd-frontend
+            port:
+              number: 80
+
+---
+# Alternative: NodePort service for local development
+apiVersion: v1
+kind: Service
+metadata:
+  name: cicd-frontend-nodeport
+  namespace: cicd-system
+  labels:
+    app: cicd-frontend
+spec:
+  type: NodePort
+  selector:
+    app: cicd-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30080
+    protocol: TCP
