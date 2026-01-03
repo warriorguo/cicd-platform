@@ -8,7 +8,6 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
 	K8s      K8sConfig      `mapstructure:"k8s"`
-	Registry RegistryConfig `mapstructure:"registry"`
 }
 
 type ServerConfig struct {
@@ -32,11 +31,6 @@ type K8sConfig struct {
 	TektonNamespace string `mapstructure:"tekton_namespace"`
 }
 
-type RegistryConfig struct {
-	DefaultRegistry string `mapstructure:"default_registry"`
-	SecretName      string `mapstructure:"secret_name"`
-}
-
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -45,8 +39,10 @@ func Load() (*Config, error) {
 
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("server.port", "8080")
-	viper.SetDefault("database.user", "liuli")
-	viper.SetDefault("database.host", "192.168.0.151")
+	viper.SetDefault("database.user", "postgres")
+	viper.SetDefault("database.host", "localhost")
+	viper.SetDefault("database.dbname", "appdb")
+	viper.SetDefault("database.password", "pass")
 	viper.SetDefault("database.port", "5432")
 	viper.SetDefault("database.sslmode", "disable")
 	viper.SetDefault("k8s.in_cluster", false)

@@ -2,12 +2,14 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"encoding/json"
+
+	"github.com/warriorguo/cicd-platform/backend/internal/models"
 )
 
 type Client struct {
@@ -89,7 +91,7 @@ func detectProvider(host string) ProviderType {
 	}
 }
 
-func (c *Client) ListBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]string, error) {
+func (c *Client) ListBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]models.Branch, error) {
 	switch repoInfo.Provider {
 	case GitHub:
 		return c.listGitHubBranches(ctx, repoInfo, token)
@@ -111,9 +113,13 @@ func (c *Client) CheckDockerfile(ctx context.Context, repoInfo *RepoInfo, branch
 	}
 }
 
-func (c *Client) listGitHubBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]string, error) {
-	url := fmt.Sprintf("%s/api/repos/%s/%s/branches", repoInfo.BaseURL, repoInfo.Owner, repoInfo.Repo)
-	
+func (c *Client) listGitHubBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]models.Branch, error) {
+	apiURL := repoInfo.BaseURL
+	if apiURL == "https://github.com" || apiURL == "" {
+		apiURL = "https://api.github.com"
+	}
+	url := fmt.Sprintf("%s/repos/%s/%s/branches", apiURL, repoInfo.Owner, repoInfo.Repo)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -134,23 +140,33 @@ func (c *Client) listGitHubBranches(ctx context.Context, repoInfo *RepoInfo, tok
 	}
 
 	var branches []struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(branches))
+	result := make([]models.Branch, len(branches))
 	for i, branch := range branches {
-		result[i] = branch.Name
+		result[i] = models.Branch{
+			Name: branch.Name,
+			SHA:  branch.Commit.SHA,
+		}
 	}
 	return result, nil
 }
 
 func (c *Client) checkGitHubFile(ctx context.Context, repoInfo *RepoInfo, branch, dockerfilePath, token string) (bool, error) {
-	url := fmt.Sprintf("%s/api/repos/%s/%s/contents/%s?ref=%s", 
-		repoInfo.BaseURL, repoInfo.Owner, repoInfo.Repo, dockerfilePath, branch)
-	
+	apiURL := repoInfo.BaseURL
+	if apiURL == "https://github.com" || apiURL == "" {
+		apiURL = "https://api.github.com"
+	}
+	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s?ref=%s",
+		apiURL, repoInfo.Owner, repoInfo.Repo, dockerfilePath, branch)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return false, err
@@ -169,10 +185,10 @@ func (c *Client) checkGitHubFile(ctx context.Context, repoInfo *RepoInfo, branch
 	return resp.StatusCode == http.StatusOK, nil
 }
 
-func (c *Client) listGitLabBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]string, error) {
+func (c *Client) listGitLabBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]models.Branch, error) {
 	projectPath := url.QueryEscape(fmt.Sprintf("%s/%s", repoInfo.Owner, repoInfo.Repo))
 	url := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches", repoInfo.BaseURL, projectPath)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -193,15 +209,21 @@ func (c *Client) listGitLabBranches(ctx context.Context, repoInfo *RepoInfo, tok
 	}
 
 	var branches []struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(branches))
+	result := make([]models.Branch, len(branches))
 	for i, branch := range branches {
-		result[i] = branch.Name
+		result[i] = models.Branch{
+			Name: branch.Name,
+			SHA:  branch.Commit.ID,
+		}
 	}
 	return result, nil
 }
@@ -230,9 +252,9 @@ func (c *Client) checkGitLabFile(ctx context.Context, repoInfo *RepoInfo, branch
 	return resp.StatusCode == http.StatusOK, nil
 }
 
-func (c *Client) listGiteaBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]string, error) {
+func (c *Client) listGiteaBranches(ctx context.Context, repoInfo *RepoInfo, token string) ([]models.Branch, error) {
 	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/branches", repoInfo.BaseURL, repoInfo.Owner, repoInfo.Repo)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -253,15 +275,21 @@ func (c *Client) listGiteaBranches(ctx context.Context, repoInfo *RepoInfo, toke
 	}
 
 	var branches []struct {
-		Name string `json:"name"`
+		Name   string `json:"name"`
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(branches))
+	result := make([]models.Branch, len(branches))
 	for i, branch := range branches {
-		result[i] = branch.Name
+		result[i] = models.Branch{
+			Name: branch.Name,
+			SHA:  branch.Commit.ID,
+		}
 	}
 	return result, nil
 }

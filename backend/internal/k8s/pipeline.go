@@ -1,5 +1,9 @@
 package k8s
 
+import (
+	"github.com/warriorguo/cicd-platform/backend/internal/models"
+)
+
 // This file contains Tekton pipeline-specific functionality
 // Currently commented out due to missing Tekton dependencies
 // Uncomment and add tektoncd/pipeline dependency when ready to use
@@ -9,14 +13,17 @@ type PipelineRunRequest struct {
 	GitURL            string
 	Branch            string
 	CommitSHA         string
+	BuildType         string // "dockerfile" or "docker-compose"
 	DockerfilePath    string
 	ContextPath       string
 	ImageRepo         string
 	ImageTag          string
 	TargetNamespace   string
 	TargetDeployName  string
+	Replicas          int               // Number of replicas to deploy
 	GitSecretRef      string
 	RegistrySecretRef string
+	EnvVars           models.EnvVars // Environment variables to inject into deployment
 }
 
 /*
@@ -26,6 +33,7 @@ func (c *Client) CreateCICDPipelineRun(ctx context.Context, req *PipelineRunRequ
 	params := []tektonv1.Param{
 		{Name: "git-url", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.GitURL}},
 		{Name: "git-revision", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.Branch}},
+		{Name: "build-type", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.BuildType}},
 		{Name: "dockerfile-path", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.DockerfilePath}},
 		{Name: "context-path", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.ContextPath}},
 		{Name: "image-repo", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: req.ImageRepo}},

@@ -32,16 +32,19 @@ func NewHandler(db *gorm.DB, gitClient *git.Client, k8sClient *k8s.Client) *Hand
 
 func (h *Handler) CreateApp(c *gin.Context) {
 	var req struct {
-		Name              string `json:"name" binding:"required"`
-		GitURL            string `json:"git_url" binding:"required"`
-		DefaultBranch     string `json:"default_branch"`
-		DockerfilePath    string `json:"dockerfile_path"`
-		ContextPath       string `json:"context_path"`
-		RegistryRepo      string `json:"registry_repo" binding:"required"`
-		TargetNamespace   string `json:"target_namespace" binding:"required"`
-		TargetDeployName  string `json:"target_deploy_name" binding:"required"`
-		GitSecretRef      string `json:"git_secret_ref"`
-		RegistrySecretRef string `json:"registry_secret_ref"`
+		Name              string            `json:"name" binding:"required"`
+		GitURL            string            `json:"git_url" binding:"required"`
+		DefaultBranch     string            `json:"default_branch"`
+		BuildType         models.BuildType  `json:"build_type"`
+		DockerfilePath    string            `json:"dockerfile_path"`
+		ContextPath       string            `json:"context_path"`
+		RegistryRepo      string            `json:"registry_repo" binding:"required"`
+		TargetNamespace   string            `json:"target_namespace" binding:"required"`
+		TargetDeployName  string            `json:"target_deploy_name" binding:"required"`
+		Replicas          int               `json:"replicas"`
+		GitSecretRef      string            `json:"git_secret_ref"`
+		RegistrySecretRef string            `json:"registry_secret_ref"`
+		EnvVars           models.EnvVars    `json:"env_vars"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -52,24 +55,37 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	if req.DefaultBranch == "" {
 		req.DefaultBranch = "main"
 	}
+	if req.BuildType == "" {
+		req.BuildType = models.BuildTypeDockerfile
+	}
 	if req.DockerfilePath == "" {
-		req.DockerfilePath = "Dockerfile"
+		if req.BuildType == models.BuildTypeDockerCompose {
+			req.DockerfilePath = "docker-compose.yml"
+		} else {
+			req.DockerfilePath = "Dockerfile"
+		}
 	}
 	if req.ContextPath == "" {
 		req.ContextPath = "."
+	}
+	if req.Replicas <= 0 {
+		req.Replicas = 1
 	}
 
 	app := models.App{
 		Name:              req.Name,
 		GitURL:            req.GitURL,
 		DefaultBranch:     req.DefaultBranch,
+		BuildType:         req.BuildType,
 		DockerfilePath:    req.DockerfilePath,
 		ContextPath:       req.ContextPath,
 		RegistryRepo:      req.RegistryRepo,
 		TargetNamespace:   req.TargetNamespace,
 		TargetDeployName:  req.TargetDeployName,
+		Replicas:          req.Replicas,
 		GitSecretRef:      req.GitSecretRef,
 		RegistrySecretRef: req.RegistrySecretRef,
+		EnvVars:           req.EnvVars,
 	}
 
 	if err := h.db.Create(&app).Error; err != nil {
@@ -164,12 +180,18 @@ func (h *Handler) ValidateDockerfile(c *gin.Context) {
 	}
 
 	token := c.GetHeader("X-Git-Token")
+
+	// Validate the build file (Dockerfile or docker-compose.yml)
 	exists, err := h.gitClient.CheckDockerfile(c.Request.Context(), repoInfo, branch, app.DockerfilePath, token)
 	if err != nil {
+		fileType := "Dockerfile"
+		if app.BuildType == models.BuildTypeDockerCompose {
+			fileType = "docker-compose.yml"
+		}
 		c.JSON(http.StatusOK, models.DockerfileValidation{
 			Valid: false,
 			Path:  app.DockerfilePath,
-			Error: err.Error(),
+			Error: fmt.Sprintf("%s validation failed: %v", fileType, err),
 		})
 		return
 	}
@@ -194,6 +216,16 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate required fields
+	if req.CommitSHA == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_sha is required"})
+		return
+	}
+	if len(req.CommitSHA) < 7 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_sha must be at least 7 characters long"})
 		return
 	}
 
@@ -236,14 +268,14 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 	if len(shortSHA) > 7 {
 		shortSHA = shortSHA[:7]
 	}
-	imageTag := fmt.Sprintf("%s:%s", app.RegistryRepo, shortSHA)
+	fullImageTag := fmt.Sprintf("%s:%s", app.RegistryRepo, shortSHA)
 
 	// Create release record
 	release := models.Release{
 		AppID:     app.ID,
 		Branch:    req.Branch,
 		CommitSHA: req.CommitSHA,
-		ImageTag:  imageTag,
+		ImageTag:  fullImageTag,
 		Status:    models.StatusPending,
 	}
 
@@ -252,32 +284,123 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 		return
 	}
 
-	// Create PipelineRun
-	pipelineRunName := fmt.Sprintf("%s-release-%d", app.Name, release.ID)
-	release.K8sRef = pipelineRunName
+	// Create actual Tekton PipelineRun if k8s client is available
+	if h.k8sClient != nil {
+		pipelineReq := &k8s.PipelineRunRequest{
+			AppName:           app.Name,
+			GitURL:            app.GitURL,
+			Branch:            req.Branch,
+			CommitSHA:         req.CommitSHA,
+			BuildType:         string(app.BuildType),
+			DockerfilePath:    app.DockerfilePath,
+			ContextPath:       app.ContextPath,
+			ImageRepo:         app.RegistryRepo,
+			ImageTag:          shortSHA,
+			TargetNamespace:   app.TargetNamespace,
+			TargetDeployName:  app.TargetDeployName,
+			Replicas:          app.Replicas,
+			GitSecretRef:      app.GitSecretRef,
+			RegistrySecretRef: app.RegistrySecretRef,
+			EnvVars:           app.EnvVars,
+		}
 
-	// Update release with K8s reference
-	h.db.Save(&release)
+		pipelineRunName, err := h.k8sClient.CreatePipelineRun(c.Request.Context(), pipelineReq)
+		if err != nil {
+			// If PipelineRun creation fails, mark release as failed
+			release.Status = models.StatusFailed
+			h.db.Save(&release)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create PipelineRun: %v", err)})
+			return
+		}
 
-	// TODO: Create actual Tekton PipelineRun
-	// For now, simulate by updating status
-	go func() {
-		time.Sleep(2 * time.Second)
-		now := time.Now()
-		release.Status = models.StatusRunning
-		release.StartedAt = &now
+		release.K8sRef = pipelineRunName
 		h.db.Save(&release)
 
-		// Simulate pipeline execution
-		time.Sleep(30 * time.Second)
-		finishedAt := time.Now()
-		release.Status = models.StatusSuccess
-		release.FinishedAt = &finishedAt
-		release.ImageDigest = "sha256:" + uuid.New().String()
+		// Start a goroutine to watch PipelineRun status
+		go h.watchPipelineRun(release.ID, pipelineRunName)
+	} else {
+		// Fallback: simulate pipeline execution for development
+		pipelineRunName := fmt.Sprintf("%s-release-%d", app.Name, release.ID)
+		release.K8sRef = pipelineRunName
 		h.db.Save(&release)
-	}()
+
+		go func() {
+			time.Sleep(2 * time.Second)
+			now := time.Now()
+			release.Status = models.StatusRunning
+			release.StartedAt = &now
+			h.db.Save(&release)
+
+			time.Sleep(30 * time.Second)
+			finishedAt := time.Now()
+			release.Status = models.StatusSuccess
+			release.FinishedAt = &finishedAt
+			release.ImageDigest = "sha256:" + uuid.New().String()
+			h.db.Save(&release)
+		}()
+	}
 
 	c.JSON(http.StatusCreated, release)
+}
+
+// watchPipelineRun watches a PipelineRun and updates the release status
+func (h *Handler) watchPipelineRun(releaseID uint, pipelineRunName string) {
+	ctx := context.Background()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	timeout := time.After(2 * time.Hour) // Max 2 hours for a build
+
+	for {
+		select {
+		case <-timeout:
+			// Timeout - mark as failed
+			var release models.Release
+			if err := h.db.First(&release, releaseID).Error; err == nil {
+				release.Status = models.StatusFailed
+				now := time.Now()
+				release.FinishedAt = &now
+				h.db.Save(&release)
+			}
+			return
+
+		case <-ticker.C:
+			status, err := h.k8sClient.GetPipelineRunStatus(ctx, pipelineRunName)
+			if err != nil {
+				continue
+			}
+
+			var release models.Release
+			if err := h.db.First(&release, releaseID).Error; err != nil {
+				return
+			}
+
+			now := time.Now()
+
+			switch status {
+			case "Running":
+				if release.Status != models.StatusRunning {
+					release.Status = models.StatusRunning
+					release.StartedAt = &now
+					h.db.Save(&release)
+				}
+
+			case "Success":
+				release.Status = models.StatusSuccess
+				release.FinishedAt = &now
+				// TODO: Get actual image digest from PipelineRun
+				release.ImageDigest = "sha256:" + uuid.New().String()
+				h.db.Save(&release)
+				return
+
+			case "Failed":
+				release.Status = models.StatusFailed
+				release.FinishedAt = &now
+				h.db.Save(&release)
+				return
+			}
+		}
+	}
 }
 
 func (h *Handler) GetRelease(c *gin.Context) {

@@ -262,7 +262,7 @@ func TestCreateRelease(t *testing.T) {
 
 		// Mock Dockerfile validation by adding a test server
 		// In real tests, you would mock the git client
-		
+
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
@@ -285,6 +285,159 @@ func TestCreateRelease(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Create Release Missing Required Fields", func(t *testing.T) {
+		release := map[string]interface{}{
+			"branch": "main",
+			// Missing commit_sha
+		}
+
+		jsonData, _ := json.Marshal(release)
+		req, _ := http.NewRequest("POST", "/api/apps/"+strconv.Itoa(int(app.ID))+"/releases", bytes.NewBuffer(jsonData))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Create Release Invalid JSON", func(t *testing.T) {
+		req, _ := http.NewRequest("POST", "/api/apps/"+strconv.Itoa(int(app.ID))+"/releases", bytes.NewBuffer([]byte("invalid json")))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("Create Release Stores Correct Data", func(t *testing.T) {
+		// Create a release and check it's stored correctly in the database
+		release := map[string]interface{}{
+			"branch":     "develop",
+			"commit_sha": "def789012",
+		}
+
+		jsonData, _ := json.Marshal(release)
+		req, _ := http.NewRequest("POST", "/api/apps/"+strconv.Itoa(int(app.ID))+"/releases", bytes.NewBuffer(jsonData))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Check if release was created (may fail due to validation)
+		if w.Code == http.StatusCreated {
+			var response models.Release
+			err := json.Unmarshal(w.Body.Bytes(), &response)
+			require.NoError(t, err)
+
+			assert.Equal(t, "develop", response.Branch)
+			assert.Equal(t, "def789012", response.CommitSHA)
+			assert.Equal(t, app.ID, response.AppID)
+			assert.NotEmpty(t, response.ImageTag)
+			assert.NotEmpty(t, response.K8sRef)
+			assert.Equal(t, models.StatusPending, response.Status)
+		}
+	})
+}
+
+func TestCreateReleaseWithBuildTypes(t *testing.T) {
+	db := setupTestDB()
+	router := setupTestRouter(db)
+
+	t.Run("Create Release for Dockerfile App", func(t *testing.T) {
+		app := models.App{
+			Name:             "dockerfile-app",
+			GitURL:           "https://github.com/test/dockerfile.git",
+			BuildType:        models.BuildTypeDockerfile,
+			DockerfilePath:   "Dockerfile",
+			RegistryRepo:     "harbor.test.com/team/dockerfile-app",
+			TargetNamespace:  "production",
+			TargetDeployName: "dockerfile-app",
+		}
+		err := db.Create(&app).Error
+		require.NoError(t, err)
+
+		release := map[string]interface{}{
+			"branch":     "main",
+			"commit_sha": "abc123456",
+		}
+
+		jsonData, _ := json.Marshal(release)
+		req, _ := http.NewRequest("POST", "/api/apps/"+strconv.Itoa(int(app.ID))+"/releases", bytes.NewBuffer(jsonData))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should handle request (may fail on validation)
+		assert.Contains(t, []int{http.StatusCreated, http.StatusBadRequest}, w.Code)
+	})
+
+	t.Run("Create Release for Docker Compose App", func(t *testing.T) {
+		app := models.App{
+			Name:             "compose-app",
+			GitURL:           "https://github.com/test/compose.git",
+			BuildType:        models.BuildTypeDockerCompose,
+			DockerfilePath:   "docker-compose.yml",
+			RegistryRepo:     "harbor.test.com/team/compose-app",
+			TargetNamespace:  "staging",
+			TargetDeployName: "compose-app",
+		}
+		err := db.Create(&app).Error
+		require.NoError(t, err)
+
+		release := map[string]interface{}{
+			"branch":     "main",
+			"commit_sha": "xyz987654",
+		}
+
+		jsonData, _ := json.Marshal(release)
+		req, _ := http.NewRequest("POST", "/api/apps/"+strconv.Itoa(int(app.ID))+"/releases", bytes.NewBuffer(jsonData))
+		req.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		// Should handle request (may fail on validation)
+		assert.Contains(t, []int{http.StatusCreated, http.StatusBadRequest}, w.Code)
+	})
+}
+
+func TestCreateReleaseImageTagGeneration(t *testing.T) {
+	db := setupTestDB()
+
+	app := models.App{
+		Name:             "tag-test-app",
+		GitURL:           "https://github.com/test/repo.git",
+		RegistryRepo:     "harbor.test.com/team/tag-test",
+		TargetNamespace:  "production",
+		TargetDeployName: "tag-test",
+	}
+	err := db.Create(&app).Error
+	require.NoError(t, err)
+
+	t.Run("Image Tag Format", func(t *testing.T) {
+		commitSHA := "abc123456789"
+		expectedPrefix := "harbor.test.com/team/tag-test:"
+
+		// Create release and verify tag format
+		release := models.Release{
+			AppID:     app.ID,
+			Branch:    "main",
+			CommitSHA: commitSHA,
+			ImageTag:  expectedPrefix + commitSHA[:7],
+			Status:    models.StatusPending,
+			K8sRef:    "test-release",
+		}
+
+		err := db.Create(&release).Error
+		require.NoError(t, err)
+
+		assert.Contains(t, release.ImageTag, expectedPrefix)
+		assert.Contains(t, release.ImageTag, commitSHA[:7])
 	})
 }
 

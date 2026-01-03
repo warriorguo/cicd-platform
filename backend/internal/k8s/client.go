@@ -1,15 +1,20 @@
 package k8s
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
-	
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -139,51 +144,226 @@ func (c *Client) GetPodLogs(ctx context.Context, podName, containerName string) 
 }
 
 func (c *Client) StreamPodLogs(ctx context.Context, podName, containerName string) (<-chan string, <-chan error) {
-	logChan := make(chan string)
-	errChan := make(chan error)
+	logChan := make(chan string, 100)
+	errChan := make(chan error, 1)
 
 	go func() {
 		defer close(logChan)
 		defer close(errChan)
 
-		req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &v1.PodLogOptions{
-			Container: containerName,
-			Follow:    true,
-		})
+		// Add retry logic for transient failures
+		var logs io.ReadCloser
+		var err error
+		
+		for retries := 0; retries < 3; retries++ {
+			req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &v1.PodLogOptions{
+				Container: containerName,
+				Follow:    true,
+				Timestamps: false,
+			})
 
-		logs, err := req.Stream(ctx)
-		if err != nil {
+			logs, err = req.Stream(ctx)
+			if err == nil {
+				break
+			}
+			
+			// Check if pod/container is not ready yet
+			if strings.Contains(err.Error(), "is waiting to start") || 
+			   strings.Contains(err.Error(), "container not found") {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			
 			errChan <- err
+			return
+		}
+		
+		if logs == nil {
+			errChan <- fmt.Errorf("failed to stream logs after retries")
 			return
 		}
 		defer logs.Close()
 
-		buf := make([]byte, 1024)
-		for {
+		scanner := bufio.NewScanner(logs)
+		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				n, err := logs.Read(buf)
-				if n > 0 {
-					logChan <- string(buf[:n])
-				}
-				if err != nil {
-					if err.Error() != "EOF" {
-						errChan <- err
-					}
-					return
-				}
+			case logChan <- scanner.Text():
 			}
+		}
+		
+		if err := scanner.Err(); err != nil && err != io.EOF {
+			errChan <- err
 		}
 	}()
 
 	return logChan, errChan
 }
 
+// CreatePipelineRun creates a Tekton PipelineRun using dynamic client
+func (c *Client) CreatePipelineRun(ctx context.Context, req *PipelineRunRequest) (string, error) {
+	// Validate required fields
+	if req.CommitSHA == "" {
+		return "", fmt.Errorf("commit_sha is required")
+	}
+	if len(req.CommitSHA) < 7 {
+		return "", fmt.Errorf("commit_sha must be at least 7 characters long, got: %s", req.CommitSHA)
+	}
+
+	pipelineRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "pipelineruns",
+	}
+
+	// Generate unique name with timestamp to allow retries
+	timestamp := time.Now().Unix()
+	pipelineRunName := fmt.Sprintf("%s-%s-%d", req.AppName, req.CommitSHA[:7], timestamp)
+	
+	// Optional: Clean up old failed PipelineRuns for the same app/commit to prevent accumulation
+	go c.cleanupOldFailedPipelineRuns(ctx, req.AppName, req.CommitSHA[:7])
+
+	// Build params array
+	params := []map[string]interface{}{
+		{"name": "git-url", "value": req.GitURL},
+		{"name": "git-revision", "value": req.Branch},
+		{"name": "build-type", "value": req.BuildType},
+		{"name": "dockerfile-path", "value": req.DockerfilePath},
+		{"name": "context-path", "value": req.ContextPath},
+		{"name": "image-repo", "value": req.ImageRepo},
+		{"name": "image-tag", "value": req.ImageTag},
+		{"name": "deploy-namespace", "value": req.TargetNamespace},
+		{"name": "deploy-name", "value": req.TargetDeployName},
+		{"name": "replicas", "value": fmt.Sprintf("%d", req.Replicas)},
+	}
+
+	if req.GitSecretRef != "" {
+		params = append(params, map[string]interface{}{
+			"name":  "git-secret",
+			"value": req.GitSecretRef,
+		})
+	}
+
+	if req.RegistrySecretRef != "" {
+		params = append(params, map[string]interface{}{
+			"name":  "registry-secret",
+			"value": req.RegistrySecretRef,
+		})
+	}
+
+	// Add environment variables as JSON string
+	if len(req.EnvVars) > 0 {
+		envVarsJSON, err := json.Marshal(req.EnvVars)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal env vars: %w", err)
+		}
+		params = append(params, map[string]interface{}{
+			"name":  "env-vars",
+			"value": string(envVarsJSON),
+		})
+	}
+
+	// Create PipelineRun unstructured object
+	pipelineRun := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "tekton.dev/v1",
+			"kind":       "PipelineRun",
+			"metadata": map[string]interface{}{
+				"name":      pipelineRunName,
+				"namespace": c.namespace,
+				"labels": map[string]interface{}{
+					"app.kubernetes.io/name":      "cicd-platform",
+					"app.kubernetes.io/component": "pipeline",
+					"cicd.platform/app":           req.AppName,
+					"cicd.platform/commit":        req.CommitSHA,
+				},
+			},
+			"spec": map[string]interface{}{
+				"pipelineRef": map[string]interface{}{
+					"name": "cicd-build-deploy",
+				},
+				"taskRunTemplate": map[string]interface{}{
+					"serviceAccountName": "pipeline-runner",
+				},
+				"params": params,
+				"workspaces": []map[string]interface{}{
+					{
+						"name": "source-ws",
+						"volumeClaimTemplate": map[string]interface{}{
+							"spec": map[string]interface{}{
+								"accessModes": []string{"ReadWriteOnce"},
+								"resources": map[string]interface{}{
+									"requests": map[string]interface{}{
+										"storage": "1Gi",
+									},
+								},
+							},
+						},
+					},
+					{
+						"name": "dockerconfig-ws",
+						"secret": map[string]interface{}{
+							"secretName": "kaniko-docker-config",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Create(ctx, pipelineRun, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to create PipelineRun: %w", err)
+	}
+
+	return pipelineRunName, nil
+}
+
+// GetPipelineRunStatus gets the status of a PipelineRun
+func (c *Client) GetPipelineRunStatus(ctx context.Context, name string) (string, error) {
+	pipelineRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "pipelineruns",
+	}
+
+	pr, err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get PipelineRun: %w", err)
+	}
+
+	// Extract status
+	conditions, found, err := unstructured.NestedSlice(pr.Object, "status", "conditions")
+	if err != nil || !found || len(conditions) == 0 {
+		return "Pending", nil
+	}
+
+	// Get the latest condition
+	latestCondition := conditions[len(conditions)-1].(map[string]interface{})
+
+	condType, _, _ := unstructured.NestedString(latestCondition, "type")
+	status, _, _ := unstructured.NestedString(latestCondition, "status")
+	reason, _, _ := unstructured.NestedString(latestCondition, "reason")
+
+	if condType == "Succeeded" {
+		if status == "True" {
+			return "Success", nil
+		} else if status == "False" {
+			return "Failed", nil
+		}
+	}
+
+	if reason == "Running" || reason == "Started" {
+		return "Running", nil
+	}
+
+	return "Pending", nil
+}
+
 func (c *Client) UpdateDeployment(ctx context.Context, namespace, deploymentName, imageTag string) error {
 	deploymentsRes := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
-	
+
 	deployment, err := c.dynamicClient.Resource(deploymentsRes).Namespace(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
@@ -207,4 +387,130 @@ func (c *Client) UpdateDeployment(ctx context.Context, namespace, deploymentName
 
 	_, err = c.dynamicClient.Resource(deploymentsRes).Namespace(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
 	return err
+}
+
+// TaskRunInfo contains information about a TaskRun and its pods
+type TaskRunInfo struct {
+	TaskRunName string
+	TaskName    string
+	PodName     string
+	Containers  []string
+}
+
+// GetTaskRunsForPipelineRun gets all TaskRuns and their pods for a PipelineRun
+func (c *Client) GetTaskRunsForPipelineRun(ctx context.Context, pipelineRunName string) ([]TaskRunInfo, error) {
+	taskRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "taskruns",
+	}
+
+	// List TaskRuns with label selector
+	taskRunList, err := c.dynamicClient.Resource(taskRunRes).Namespace(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("tekton.dev/pipelineRun=%s", pipelineRunName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list TaskRuns: %v", err)
+	}
+
+	var taskRuns []TaskRunInfo
+
+	for _, item := range taskRunList.Items {
+		taskRunName := item.GetName()
+		labels := item.GetLabels()
+		taskName := labels["tekton.dev/pipelineTask"]
+		if taskName == "" {
+			taskName = taskRunName
+		}
+
+		// Get pods for this TaskRun
+		pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("tekton.dev/taskRun=%s", taskRunName),
+		})
+		if err != nil {
+			continue
+		}
+
+		for _, pod := range pods.Items {
+			var containers []string
+			for _, container := range pod.Spec.Containers {
+				// Skip non-step containers
+				if strings.HasPrefix(container.Name, "step-") {
+					containers = append(containers, container.Name)
+				}
+			}
+
+			if len(containers) > 0 {
+				taskRuns = append(taskRuns, TaskRunInfo{
+					TaskRunName: taskRunName,
+					TaskName:    taskName,
+					PodName:     pod.Name,
+					Containers:  containers,
+				})
+			}
+		}
+	}
+
+	return taskRuns, nil
+}
+
+// cleanupOldFailedPipelineRuns removes old failed PipelineRuns for the same app/commit to prevent resource accumulation
+func (c *Client) cleanupOldFailedPipelineRuns(ctx context.Context, appName, shortSHA string) {
+	pipelineRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "pipelineruns",
+	}
+	
+	// List PipelineRuns with specific labels
+	labelSelector := fmt.Sprintf("cicd.platform/app=%s,cicd.platform/commit=%s*", appName, shortSHA)
+	
+	list, err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		// Silently fail - cleanup is optional
+		return
+	}
+	
+	for _, item := range list.Items {
+		// Check if PipelineRun failed
+		status, exists, err := unstructured.NestedMap(item.Object, "status")
+		if !exists || err != nil {
+			continue
+		}
+		
+		conditions, exists, err := unstructured.NestedSlice(status, "conditions")
+		if !exists || err != nil {
+			continue
+		}
+		
+		for _, conditionInterface := range conditions {
+			condition, ok := conditionInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			
+			conditionType, exists, err := unstructured.NestedString(condition, "type")
+			if !exists || err != nil || conditionType != "Succeeded" {
+				continue
+			}
+			
+			conditionStatus, exists, err := unstructured.NestedString(condition, "status")
+			if !exists || err != nil {
+				continue
+			}
+			
+			// Delete failed PipelineRuns (status = "False")
+			if conditionStatus == "False" {
+				name, exists, err := unstructured.NestedString(item.Object, "metadata", "name")
+				if exists && err == nil {
+					// Don't delete the current one we just created
+					if !strings.Contains(name, fmt.Sprintf("-%d", time.Now().Unix())) {
+						c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Delete(ctx, name, metav1.DeleteOptions{})
+					}
+				}
+			}
+		}
+	}
 }

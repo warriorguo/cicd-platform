@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,6 +72,9 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Mutex for WebSocket writes
+	var wsMutex sync.Mutex
+
 	// Send initial status
 	statusMsg := WSMessage{
 		Type: "status",
@@ -81,40 +86,23 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 			ImageDigest: release.ImageDigest,
 		},
 	}
+	
+	wsMutex.Lock()
 	if err := conn.WriteJSON(statusMsg); err != nil {
+		wsMutex.Unlock()
 		log.Printf("Error sending initial status: %v", err)
 		return
 	}
+	wsMutex.Unlock()
 
 	// Start status monitoring
 	statusTicker := time.NewTicker(5 * time.Second)
 	defer statusTicker.Stop()
 
-	// Start log streaming (simulated for now)
-	logTicker := time.NewTicker(2 * time.Second)
-	defer logTicker.Stop()
-
-	logMessages := []string{
-		"Starting git-clone task...",
-		"Cloning repository...",
-		"Repository cloned successfully",
-		"Starting validate-dockerfile task...",
-		"Dockerfile found at path: Dockerfile",
-		"Dockerfile validation passed",
-		"Starting kaniko-build task...",
-		"Building container image...",
-		"Pushing image to registry...",
-		"Image pushed successfully",
-		"Starting kubectl-deploy task...",
-		"Updating deployment...",
-		"Deployment updated successfully",
-		"Starting verify-deployment task...",
-		"Waiting for rollout to complete...",
-		"Deployment rollout completed",
-	}
-	
-	logIndex := 0
-	var currentTask string
+	// Track active log streams
+	activeStreams := make(map[string]bool)
+	logStreamCtx, logStreamCancel := context.WithCancel(ctx)
+	defer logStreamCancel()
 
 	for {
 		select {
@@ -124,7 +112,7 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 		case <-statusTicker.C:
 			// Check for status updates
 			var updatedRelease models.Release
-			if err := h.db.First(&updatedRelease, release.ID).Error; err != nil {
+			if err := h.db.Preload("App").First(&updatedRelease, release.ID).Error; err != nil {
 				continue
 			}
 
@@ -143,7 +131,11 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 						ImageDigest: release.ImageDigest,
 					},
 				}
-				if err := conn.WriteJSON(statusMsg); err != nil {
+				wsMutex.Lock()
+				err := conn.WriteJSON(statusMsg)
+				wsMutex.Unlock()
+				
+				if err != nil {
 					log.Printf("Error sending status update: %v", err)
 					return
 				}
@@ -154,40 +146,27 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 				}
 			}
 
-		case <-logTicker.C:
-			// Send simulated logs
-			if release.Status == models.StatusRunning && logIndex < len(logMessages) {
-				// Determine current task based on log message
-				message := logMessages[logIndex]
-				switch {
-				case logIndex < 3:
-					currentTask = "git-clone"
-				case logIndex < 6:
-					currentTask = "validate-dockerfile"
-				case logIndex < 10:
-					currentTask = "kaniko-build"
-				case logIndex < 13:
-					currentTask = "kubectl-deploy"
-				default:
-					currentTask = "verify-deployment"
+			// Stream logs for running releases
+			if release.Status == models.StatusRunning && release.K8sRef != "" && h.k8sClient != nil {
+				// Get TaskRuns for this PipelineRun
+				taskRuns, err := h.k8sClient.GetTaskRunsForPipelineRun(ctx, release.K8sRef)
+				if err != nil {
+					log.Printf("Error getting TaskRuns: %v", err)
+					continue
 				}
 
-				logMsg := WSMessage{
-					Type: "log",
-					Payload: LogUpdate{
-						ReleaseID: release.ID,
-						Task:      currentTask,
-						Container: "step",
-						Content:   message,
-						Timestamp: time.Now(),
-					},
+				// Start log streaming for each new pod
+				for _, taskRun := range taskRuns {
+					streamKey := fmt.Sprintf("%s-%s", taskRun.PodName, taskRun.TaskName)
+					if !activeStreams[streamKey] {
+						activeStreams[streamKey] = true
+						
+						// Start streaming logs for each container
+						for _, container := range taskRun.Containers {
+							go h.streamPodLogs(logStreamCtx, conn, &wsMutex, release.ID, taskRun.PodName, container, taskRun.TaskName)
+						}
+					}
 				}
-
-				if err := conn.WriteJSON(logMsg); err != nil {
-					log.Printf("Error sending log update: %v", err)
-					return
-				}
-				logIndex++
 			}
 
 		default:
@@ -199,6 +178,51 @@ func (h *Handler) StreamRelease(c *gin.Context) {
 					log.Printf("WebSocket error: %v", err)
 				}
 				return
+			}
+		}
+	}
+}
+
+// streamPodLogs streams logs from a specific pod container
+func (h *Handler) streamPodLogs(ctx context.Context, conn *websocket.Conn, wsMutex *sync.Mutex, releaseID uint, podName, containerName, taskName string) {
+	logChan, errChan := h.k8sClient.StreamPodLogs(ctx, podName, containerName)
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err, ok := <-errChan:
+			if !ok {
+				return
+			}
+			if err != nil {
+				log.Printf("Error streaming logs from %s/%s: %v", podName, containerName, err)
+				return
+			}
+		case logLine, ok := <-logChan:
+			if !ok {
+				return
+			}
+			if logLine != "" {
+				logMsg := WSMessage{
+					Type: "log",
+					Payload: LogUpdate{
+						ReleaseID: releaseID,
+						Task:      taskName,
+						Container: containerName,
+						Content:   logLine,
+						Timestamp: time.Now(),
+					},
+				}
+				
+				wsMutex.Lock()
+				err := conn.WriteJSON(logMsg)
+				wsMutex.Unlock()
+				
+				if err != nil {
+					log.Printf("Error sending log: %v", err)
+					return
+				}
 			}
 		}
 	}

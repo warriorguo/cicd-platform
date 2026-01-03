@@ -31,7 +31,7 @@ const AppDetails = () => {
   const [app, setApp] = useState(null);
   const [releases, setReleases] = useState([]);
   const [branches, setBranches] = useState([]);
-  const [selectedBranch, setSelectedBranch] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState(null); // Now stores branch object {name, sha}
   const [dockerfileValidation, setDockerfileValidation] = useState(null);
   const [loading, setLoading] = useState(false);
   const [releasesLoading, setReleasesLoading] = useState(false);
@@ -51,7 +51,7 @@ const AppDetails = () => {
     try {
       const response = await appsAPI.getApp(id);
       setApp(response.data);
-      setSelectedBranch(response.data.default_branch);
+      // Will set the actual branch object when branches are fetched
     } catch (error) {
       message.error('Failed to fetch application');
     } finally {
@@ -75,7 +75,18 @@ const AppDetails = () => {
     setBranchesLoading(true);
     try {
       const response = await appsAPI.getAppBranches(id);
-      setBranches(response.data.branches || []);
+      const fetchedBranches = response.data.branches || [];
+      setBranches(fetchedBranches);
+
+      // Set default branch as selected if not already selected
+      if (app && !selectedBranch && fetchedBranches.length > 0) {
+        const defaultBranch = fetchedBranches.find(b => b.name === app.default_branch);
+        if (defaultBranch) {
+          setSelectedBranch(defaultBranch);
+        } else {
+          setSelectedBranch(fetchedBranches[0]);
+        }
+      }
     } catch (error) {
       message.error('Failed to fetch branches');
     } finally {
@@ -83,10 +94,11 @@ const AppDetails = () => {
     }
   };
 
-  const validateDockerfile = async (branch) => {
+  const validateDockerfile = async (branchObj) => {
     setValidating(true);
     try {
-      const response = await appsAPI.validateDockerfile(id, branch);
+      const branchName = branchObj?.name || branchObj;
+      const response = await appsAPI.validateDockerfile(id, branchName);
       setDockerfileValidation(response.data);
       if (response.data.valid) {
         message.success('Dockerfile found and valid');
@@ -101,6 +113,11 @@ const AppDetails = () => {
   };
 
   const handleDeploy = async () => {
+    if (!selectedBranch || !selectedBranch.sha) {
+      message.error('Please select a branch first');
+      return;
+    }
+
     if (!dockerfileValidation || !dockerfileValidation.valid) {
       Modal.confirm({
         title: 'Dockerfile Not Validated',
@@ -112,17 +129,18 @@ const AppDetails = () => {
 
     Modal.confirm({
       title: 'Deploy Application',
-      content: `Are you sure you want to deploy branch "${selectedBranch}"?`,
+      content: `Are you sure you want to deploy branch "${selectedBranch.name}" (${selectedBranch.sha.substring(0, 7)})?`,
       onOk: async () => {
         setDeploying(true);
         try {
           const response = await appsAPI.createRelease(id, {
-            branch: selectedBranch,
+            branch: selectedBranch.name,
+            commit_sha: selectedBranch.sha,
           });
           message.success('Release created successfully');
           navigate(`/releases/${response.data.id}`);
         } catch (error) {
-          message.error('Failed to create release');
+          message.error(error.response?.data?.error || 'Failed to create release');
         } finally {
           setDeploying(false);
         }
@@ -243,18 +261,28 @@ const AppDetails = () => {
             <Space>
               <Select
                 placeholder="Select branch"
-                value={selectedBranch}
-                onChange={setSelectedBranch}
+                value={selectedBranch?.name}
+                onChange={(branchName) => {
+                  const branch = branches.find(b => b.name === branchName);
+                  setSelectedBranch(branch);
+                }}
                 loading={branchesLoading}
                 onDropdownVisibleChange={(open) => {
                   if (open && branches.length === 0) {
                     fetchBranches();
                   }
                 }}
-                style={{ width: 200 }}
+                style={{ width: 350 }}
               >
                 {branches.map(branch => (
-                  <Option key={branch} value={branch}>{branch}</Option>
+                  <Option key={branch.name} value={branch.name}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontWeight: 500 }}>{branch.name}</span>
+                      <span style={{ color: '#999', fontSize: '12px', fontFamily: 'monospace' }}>
+                        {branch.sha.substring(0, 7)}
+                      </span>
+                    </div>
+                  </Option>
                 ))}
               </Select>
               <Button 
@@ -281,6 +309,19 @@ const AppDetails = () => {
                 Deploy
               </Button>
             </Space>
+
+            {selectedBranch && selectedBranch.sha && (
+              <Alert
+                message={
+                  <span>
+                    Selected commit: <code style={{ fontFamily: 'monospace' }}>{selectedBranch.sha}</code>
+                  </span>
+                }
+                type="info"
+                showIcon
+                style={{ marginTop: 8 }}
+              />
+            )}
 
             {dockerfileValidation && (
               <Alert

@@ -11,7 +11,7 @@ import (
 func TestConfigDefaults(t *testing.T) {
 	// Clear environment variables that might interfere
 	os.Clearenv()
-	
+
 	config, err := Load()
 	require.NoError(t, err)
 
@@ -62,8 +62,6 @@ func TestConfigEnvironmentVariables(t *testing.T) {
 	assert.True(t, config.K8s.InCluster)
 	assert.Equal(t, "custom-runners", config.K8s.PipelineNS)
 	assert.Equal(t, "custom-tekton", config.K8s.TektonNamespace)
-	assert.Equal(t, "harbor.example.com", config.Registry.DefaultRegistry)
-	assert.Equal(t, "custom-secret", config.Registry.SecretName)
 }
 
 func TestConfigStructure(t *testing.T) {
@@ -86,10 +84,6 @@ func TestConfigStructure(t *testing.T) {
 			PipelineNS:      "pipeline-ns",
 			TektonNamespace: "tekton-ns",
 		},
-		Registry: RegistryConfig{
-			DefaultRegistry: "registry.example.com",
-			SecretName:      "registry-secret",
-		},
 	}
 
 	assert.Equal(t, "test-host", config.Server.Host)
@@ -104,6 +98,4 @@ func TestConfigStructure(t *testing.T) {
 	assert.Equal(t, "/path/to/kubeconfig", config.K8s.KubeConfig)
 	assert.Equal(t, "pipeline-ns", config.K8s.PipelineNS)
 	assert.Equal(t, "tekton-ns", config.K8s.TektonNamespace)
-	assert.Equal(t, "registry.example.com", config.Registry.DefaultRegistry)
-	assert.Equal(t, "registry-secret", config.Registry.SecretName)
 }

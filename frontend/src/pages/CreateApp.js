@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message, Space } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, message, Space, Select, Divider, InputNumber } from 'antd';
+import { ArrowLeftOutlined, PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
+
+const { Option } = Select;
 
 const CreateApp = () => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const [buildType, setBuildType] = useState('dockerfile');
   const navigate = useNavigate();
 
   const onFinish = async (values) => {
@@ -41,8 +44,21 @@ const CreateApp = () => {
           onFinish={onFinish}
           initialValues={{
             default_branch: 'main',
+            build_type: 'dockerfile',
             dockerfile_path: 'Dockerfile',
             context_path: '.',
+            replicas: 1,
+          }}
+          onValuesChange={(changedValues) => {
+            if (changedValues.build_type) {
+              setBuildType(changedValues.build_type);
+              // Update dockerfile_path based on build_type
+              if (changedValues.build_type === 'docker-compose') {
+                form.setFieldsValue({ dockerfile_path: 'docker-compose.yml' });
+              } else {
+                form.setFieldsValue({ dockerfile_path: 'Dockerfile' });
+              }
+            }
           }}
         >
           <Form.Item
@@ -75,11 +91,24 @@ const CreateApp = () => {
           </Form.Item>
 
           <Form.Item
-            label="Dockerfile Path"
-            name="dockerfile_path"
-            tooltip="Path to Dockerfile relative to repository root"
+            label="Build Type"
+            name="build_type"
+            tooltip="Select build method: Dockerfile or docker-compose"
           >
-            <Input placeholder="Dockerfile" />
+            <Select>
+              <Option value="dockerfile">Dockerfile</Option>
+              <Option value="docker-compose">Docker Compose</Option>
+            </Select>
+          </Form.Item>
+
+          <Form.Item
+            label={buildType === 'docker-compose' ? 'Docker Compose File Path' : 'Dockerfile Path'}
+            name="dockerfile_path"
+            tooltip={buildType === 'docker-compose'
+              ? 'Path to docker-compose.yml relative to repository root'
+              : 'Path to Dockerfile relative to repository root'}
+          >
+            <Input placeholder={buildType === 'docker-compose' ? 'docker-compose.yml' : 'Dockerfile'} />
           </Form.Item>
 
           <Form.Item
@@ -115,6 +144,18 @@ const CreateApp = () => {
           </Form.Item>
 
           <Form.Item
+            label="Replicas"
+            name="replicas"
+            tooltip="Number of pod replicas to deploy"
+            rules={[
+              { required: true, message: 'Please enter number of replicas' },
+              { type: 'number', min: 1, max: 100, message: 'Replicas must be between 1 and 100' }
+            ]}
+          >
+            <InputNumber min={1} max={100} style={{ width: '100%' }} placeholder="1" />
+          </Form.Item>
+
+          <Form.Item
             label="Git Secret Reference (Optional)"
             name="git_secret_ref"
             tooltip="Kubernetes secret containing Git credentials"
@@ -129,6 +170,46 @@ const CreateApp = () => {
           >
             <Input placeholder="registry-credentials" />
           </Form.Item>
+
+          <Divider orientation="left">Environment Variables (Optional)</Divider>
+
+          <Form.List name="env_vars">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map(({ key, name, ...restField }) => (
+                  <Space
+                    key={key}
+                    style={{ display: 'flex', marginBottom: 8 }}
+                    align="baseline"
+                  >
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'name']}
+                      rules={[
+                        { required: true, message: 'Variable name required' },
+                        { pattern: /^[A-Z_][A-Z0-9_]*$/, message: 'Use uppercase letters, numbers, and underscores' }
+                      ]}
+                    >
+                      <Input placeholder="VARIABLE_NAME" style={{ width: 200 }} />
+                    </Form.Item>
+                    <Form.Item
+                      {...restField}
+                      name={[name, 'value']}
+                      rules={[{ required: true, message: 'Value required' }]}
+                    >
+                      <Input placeholder="value" style={{ width: 300 }} />
+                    </Form.Item>
+                    <MinusCircleOutlined onClick={() => remove(name)} />
+                  </Space>
+                ))}
+                <Form.Item>
+                  <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
+                    Add Environment Variable
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form.List>
 
           <Form.Item>
             <Space>

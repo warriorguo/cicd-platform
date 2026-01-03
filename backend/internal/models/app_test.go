@@ -198,3 +198,74 @@ func TestBranch(t *testing.T) {
 		assert.Equal(t, "abc123456789", branch.SHA)
 	})
 }
+
+func TestBuildType(t *testing.T) {
+	t.Run("BuildType Constants", func(t *testing.T) {
+		assert.Equal(t, BuildType("dockerfile"), BuildTypeDockerfile)
+		assert.Equal(t, BuildType("docker-compose"), BuildTypeDockerCompose)
+	})
+
+	t.Run("App with Dockerfile BuildType", func(t *testing.T) {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		assert.NoError(t, err)
+		err = db.AutoMigrate(&App{})
+		assert.NoError(t, err)
+
+		app := App{
+			Name:             "dockerfile-app",
+			GitURL:           "https://github.com/test/dockerfile.git",
+			BuildType:        BuildTypeDockerfile,
+			DockerfilePath:   "Dockerfile",
+			RegistryRepo:     "harbor.test.com/team/app",
+			TargetNamespace:  "production",
+			TargetDeployName: "dockerfile-app",
+		}
+
+		err = db.Create(&app).Error
+		assert.NoError(t, err)
+		assert.Equal(t, BuildTypeDockerfile, app.BuildType)
+		assert.Equal(t, "Dockerfile", app.DockerfilePath)
+	})
+
+	t.Run("App with DockerCompose BuildType", func(t *testing.T) {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		assert.NoError(t, err)
+		err = db.AutoMigrate(&App{})
+		assert.NoError(t, err)
+
+		app := App{
+			Name:             "compose-app",
+			GitURL:           "https://github.com/test/compose.git",
+			BuildType:        BuildTypeDockerCompose,
+			DockerfilePath:   "docker-compose.yml",
+			RegistryRepo:     "harbor.test.com/team/compose-app",
+			TargetNamespace:  "production",
+			TargetDeployName: "compose-app",
+		}
+
+		err = db.Create(&app).Error
+		assert.NoError(t, err)
+		assert.Equal(t, BuildTypeDockerCompose, app.BuildType)
+		assert.Equal(t, "docker-compose.yml", app.DockerfilePath)
+	})
+
+	t.Run("App with Default BuildType", func(t *testing.T) {
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		assert.NoError(t, err)
+		err = db.AutoMigrate(&App{})
+		assert.NoError(t, err)
+
+		app := App{
+			Name:             "default-app",
+			GitURL:           "https://github.com/test/default.git",
+			RegistryRepo:     "harbor.test.com/team/default-app",
+			TargetNamespace:  "production",
+			TargetDeployName: "default-app",
+		}
+
+		err = db.Create(&app).Error
+		assert.NoError(t, err)
+		// Default should be dockerfile
+		assert.Equal(t, BuildTypeDockerfile, app.BuildType)
+	})
+}
