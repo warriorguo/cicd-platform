@@ -35,7 +35,14 @@ func SetupRoutes(handler *Handler) *gin.Engine {
 		api.POST("/apps/:id/releases", handler.CreateRelease)
 		api.GET("/apps/:id/releases", handler.ListReleases)
 		api.GET("/releases/:id", handler.GetRelease)
+		api.POST("/releases/:id/deploy", handler.DeployRelease)
 		api.POST("/releases/:id/rollback", handler.RollbackRelease)
+		
+		// Build monitoring endpoints
+		api.GET("/releases/:id/build-status", handler.GetBuildStatus)
+		api.GET("/releases/:id/build-stages", handler.GetBuildStages)
+		api.GET("/releases/:id/build-logs/:stage", handler.GetBuildLogsForStage)
+		api.GET("/releases/:id/build-logs", handler.GetBuildLogs)
 		
 		// Streaming endpoints
 		api.GET("/releases/:id/stream", handler.StreamRelease)      // WebSocket

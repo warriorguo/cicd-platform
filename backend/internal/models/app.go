@@ -85,11 +85,13 @@ type Release struct {
 type ReleaseStatus string
 
 const (
-	StatusPending  ReleaseStatus = "pending"
-	StatusRunning  ReleaseStatus = "running"
-	StatusSuccess  ReleaseStatus = "success"
-	StatusFailed   ReleaseStatus = "failed"
-	StatusCanceled ReleaseStatus = "canceled"
+	StatusPending    ReleaseStatus = "pending"
+	StatusRunning    ReleaseStatus = "running"
+	StatusSuccess    ReleaseStatus = "success"
+	StatusFailed     ReleaseStatus = "failed"
+	StatusCanceled   ReleaseStatus = "canceled"
+	StatusDeploying  ReleaseStatus = "deploying"
+	StatusDeployed   ReleaseStatus = "deployed"
 )
 
 type Branch struct {
@@ -101,4 +103,32 @@ type DockerfileValidation struct {
 	Valid bool   `json:"valid"`
 	Path  string `json:"path"`
 	Error string `json:"error,omitempty"`
+}
+
+type BuildLogStatus string
+
+const (
+	BuildLogStatusPending   BuildLogStatus = "pending"
+	BuildLogStatusRunning   BuildLogStatus = "running"
+	BuildLogStatusCompleted BuildLogStatus = "completed"
+	BuildLogStatusFailed    BuildLogStatus = "failed"
+)
+
+type BuildLog struct {
+	ID            uint           `json:"id" gorm:"primaryKey"`
+	ReleaseID     uint           `json:"release_id" gorm:"not null;index"`
+	StageName     string         `json:"stage_name" gorm:"not null"`
+	TaskRunName   string         `json:"task_run_name"`
+	PodName       string         `json:"pod_name"`
+	ContainerName string         `json:"container_name"`
+	Status        BuildLogStatus `json:"status" gorm:"default:'pending'"`
+	LogsContent   string         `json:"logs_content" gorm:"type:text"`
+	StartedAt     *time.Time     `json:"started_at"`
+	FinishedAt    *time.Time     `json:"finished_at"`
+	ErrorMessage  string         `json:"error_message" gorm:"type:text"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+	DeletedAt     gorm.DeletedAt `json:"-" gorm:"index"`
+
+	Release Release `json:"release,omitempty" gorm:"foreignKey:ReleaseID"`
 }

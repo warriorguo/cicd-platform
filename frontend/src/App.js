@@ -8,6 +8,8 @@ import AppsList from './pages/AppsList';
 import AppDetails from './pages/AppDetails';
 import CreateApp from './pages/CreateApp';
 import ReleaseDetails from './pages/ReleaseDetails';
+import BuildDetails from './pages/BuildDetails';
+import DeployDetails from './pages/DeployDetails';
 
 const { Header, Content, Sider } = Layout;
 
@@ -41,6 +43,8 @@ function App() {
               <Route path="/apps/new" element={<CreateApp />} />
               <Route path="/apps/:id" element={<AppDetails />} />
               <Route path="/releases/:id" element={<ReleaseDetails />} />
+              <Route path="/releases/:id/build" element={<BuildDetails />} />
+              <Route path="/releases/:id/deploy" element={<DeployDetails />} />
             </Routes>
           </Content>
         </Layout>

@@ -1,0 +1,141 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: cicd-build
+  namespace: cicd-runners
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL
+    - name: git-revision
+      type: string
+      description: Git revision (branch, tag, or commit SHA)
+      default: main
+    - name: build-type
+      type: string
+      description: Build type - "dockerfile" or "docker-compose"
+      default: dockerfile
+    - name: dockerfile-path
+      type: string
+      description: Path to Dockerfile or docker-compose.yml
+      default: Dockerfile
+    - name: context-path
+      type: string
+      description: Build context path
+      default: .
+    - name: image-repo
+      type: string
+      description: Container image repository
+    - name: image-tag
+      type: string
+      description: Container image tag
+    - name: git-secret
+      type: string
+      description: Git credentials secret name
+      default: ""
+    - name: registry-secret
+      type: string
+      description: Registry credentials secret name
+      default: ""
+
+  workspaces:
+    - name: source-ws
+      description: Workspace for source code
+    - name: dockerconfig-ws
+      description: Docker config for registry authentication
+      optional: true
+
+  tasks:
+    - name: fetch-source
+      taskRef:
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: source-ws
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+
+    - name: build-push-dockerfile
+      when:
+        - input: "$(params.build-type)"
+          operator: in
+          values: ["dockerfile"]
+      runAfter:
+        - fetch-source
+      taskRef:
+        name: kaniko
+      workspaces:
+        - name: source
+          workspace: source-ws
+        - name: dockerconfig
+          workspace: dockerconfig-ws
+      params:
+        - name: IMAGE
+          value: "$(params.image-repo):$(params.image-tag)"
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.context-path)
+        - name: EXTRA_ARGS
+          value:
+            - "--cache=true"
+            - "--cache-ttl=24h"
+
+    - name: build-push-docker-compose
+      when:
+        - input: "$(params.build-type)"
+          operator: in
+          values: ["docker-compose"]
+      runAfter:
+        - fetch-source
+      taskSpec:
+        params:
+          - name: IMAGE
+            type: string
+          - name: COMPOSE_FILE
+            type: string
+          - name: CONTEXT
+            type: string
+        workspaces:
+          - name: source
+        steps:
+          - name: build-and-push
+            image: docker/compose:latest
+            workingDir: $(workspaces.source.path)/$(params.CONTEXT)
+            env:
+              - name: DOCKER_HOST
+                value: tcp://localhost:2375
+            script: |
+              #!/bin/sh
+              set -e
+              
+              echo "Building with docker-compose..."
+              docker-compose -f $(params.COMPOSE_FILE) build
+              
+              echo "Pushing image $(params.IMAGE)..."
+              docker-compose -f $(params.COMPOSE_FILE) push
+              
+              echo "Build and push completed successfully"
+          
+          - name: docker-daemon
+            image: docker:dind
+            securityContext:
+              privileged: true
+            command:
+              - dockerd
+              - --host=tcp://127.0.0.1:2375
+              - --tls=false
+      params:
+        - name: IMAGE
+          value: "$(params.image-repo):$(params.image-tag)"
+        - name: COMPOSE_FILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.context-path)
+      workspaces:
+        - name: source
+          workspace: source-ws

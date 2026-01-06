@@ -138,7 +138,7 @@ const AppDetails = () => {
             commit_sha: selectedBranch.sha,
           });
           message.success('Release created successfully');
-          navigate(`/releases/${response.data.id}`);
+          navigate(`/releases/${response.data.id}/build`);
         } catch (error) {
           message.error(error.response?.data?.error || 'Failed to create release');
         } finally {
@@ -200,15 +200,44 @@ const AppDetails = () => {
     {
       title: 'Actions',
       key: 'actions',
-      render: (_, record) => (
-        <Space size="middle">
-          <Link to={`/releases/${record.id}`}>
-            <Button type="link" icon={<EyeOutlined />} size="small">
-              View
-            </Button>
-          </Link>
-        </Space>
-      ),
+      render: (_, record) => {
+        const isBuilding = record.status === 'pending' || record.status === 'running';
+        const canDeploy = record.status === 'success';
+        const isDeployed = record.status === 'deployed' || record.status === 'deploying';
+        
+        return (
+          <Space size="middle">
+            {isBuilding && (
+              <Link to={`/releases/${record.id}/build`}>
+                <Button type="link" icon={<EyeOutlined />} size="small">
+                  View Build
+                </Button>
+              </Link>
+            )}
+            {canDeploy && (
+              <Link to={`/releases/${record.id}/deploy`}>
+                <Button type="link" icon={<PlayCircleOutlined />} size="small">
+                  Deploy
+                </Button>
+              </Link>
+            )}
+            {isDeployed && (
+              <Link to={`/releases/${record.id}/deploy`}>
+                <Button type="link" icon={<EyeOutlined />} size="small">
+                  View Deploy
+                </Button>
+              </Link>
+            )}
+            {record.status === 'failed' && (
+              <Link to={`/releases/${record.id}/build`}>
+                <Button type="link" icon={<ExclamationCircleOutlined />} size="small">
+                  View Build
+                </Button>
+              </Link>
+            )}
+          </Space>
+        );
+      },
     },
   ];
 

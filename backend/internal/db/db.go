@@ -34,5 +34,6 @@ func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&models.App{},
 		&models.Release{},
+		&models.BuildLog{},
 	)
 }

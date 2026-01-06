@@ -26,6 +26,30 @@ type PipelineRunRequest struct {
 	EnvVars           models.EnvVars // Environment variables to inject into deployment
 }
 
+type BuildPipelineRunRequest struct {
+	AppName           string
+	GitURL            string
+	Branch            string
+	CommitSHA         string
+	BuildType         string // "dockerfile" or "docker-compose"
+	DockerfilePath    string
+	ContextPath       string
+	ImageRepo         string
+	ImageTag          string
+	GitSecretRef      string
+	RegistrySecretRef string
+}
+
+type DeployPipelineRunRequest struct {
+	AppName          string
+	ImageRepo        string
+	ImageTag         string
+	TargetNamespace  string
+	TargetDeployName string
+	Replicas         int
+	EnvVars          models.EnvVars
+}
+
 /*
 func (c *Client) CreateCICDPipelineRun(ctx context.Context, req *PipelineRunRequest) (*tektonv1.PipelineRun, error) {
 	pipelineRunName := fmt.Sprintf("%s-%s", req.AppName, strings.ToLower(req.CommitSHA[:7]))

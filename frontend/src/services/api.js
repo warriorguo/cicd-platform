@@ -44,7 +44,17 @@ export const appsAPI = {
   createRelease: (appId, data) => api.post(`/apps/${appId}/releases`, data),
   getReleases: (appId, page = 1, limit = 10) => api.get(`/apps/${appId}/releases?page=${page}&limit=${limit}`),
   getRelease: (id) => api.get(`/releases/${id}`),
+  deployRelease: (id) => api.post(`/releases/${id}/deploy`),
   rollbackRelease: (id) => api.post(`/releases/${id}/rollback`),
+  
+  // Build Monitoring
+  getBuildStatus: (id) => api.get(`/releases/${id}/build-status`),
+  getBuildStages: (id) => api.get(`/releases/${id}/build-stages`),
+  getBuildLogsForStage: (id, stage) => api.get(`/releases/${id}/build-logs/${stage}`),
+  getBuildLogs: (id, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return api.get(`/releases/${id}/build-logs${query ? `?${query}` : ''}`);
+  },
 };
 
 export const createWebSocketConnection = (releaseId) => {
