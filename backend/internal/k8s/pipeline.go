@@ -8,23 +8,6 @@ import (
 // Currently commented out due to missing Tekton dependencies
 // Uncomment and add tektoncd/pipeline dependency when ready to use
 
-type PipelineRunRequest struct {
-	AppName           string
-	GitURL            string
-	Branch            string
-	CommitSHA         string
-	BuildType         string // "dockerfile" or "docker-compose"
-	DockerfilePath    string
-	ContextPath       string
-	ImageRepo         string
-	ImageTag          string
-	TargetNamespace   string
-	TargetDeployName  string
-	Replicas          int               // Number of replicas to deploy
-	GitSecretRef      string
-	RegistrySecretRef string
-	EnvVars           models.EnvVars // Environment variables to inject into deployment
-}
 
 type BuildPipelineRunRequest struct {
 	AppName           string

@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 )
 
 type Client struct {
@@ -201,124 +202,6 @@ func (c *Client) StreamPodLogs(ctx context.Context, podName, containerName strin
 	return logChan, errChan
 }
 
-// CreatePipelineRun creates a Tekton PipelineRun using dynamic client
-func (c *Client) CreatePipelineRun(ctx context.Context, req *PipelineRunRequest) (string, error) {
-	// Validate required fields
-	if req.CommitSHA == "" {
-		return "", fmt.Errorf("commit_sha is required")
-	}
-	if len(req.CommitSHA) < 7 {
-		return "", fmt.Errorf("commit_sha must be at least 7 characters long, got: %s", req.CommitSHA)
-	}
-
-	pipelineRunRes := schema.GroupVersionResource{
-		Group:    "tekton.dev",
-		Version:  "v1",
-		Resource: "pipelineruns",
-	}
-
-	// Generate unique name with timestamp to allow retries
-	timestamp := time.Now().Unix()
-	pipelineRunName := fmt.Sprintf("%s-%s-%d", req.AppName, req.CommitSHA[:7], timestamp)
-	
-	// Optional: Clean up old failed PipelineRuns for the same app/commit to prevent accumulation
-	go c.cleanupOldFailedPipelineRuns(ctx, req.AppName, req.CommitSHA[:7])
-
-	// Build params array
-	params := []map[string]interface{}{
-		{"name": "git-url", "value": req.GitURL},
-		{"name": "git-revision", "value": req.Branch},
-		{"name": "build-type", "value": req.BuildType},
-		{"name": "dockerfile-path", "value": req.DockerfilePath},
-		{"name": "context-path", "value": req.ContextPath},
-		{"name": "image-repo", "value": req.ImageRepo},
-		{"name": "image-tag", "value": req.ImageTag},
-		{"name": "deploy-namespace", "value": req.TargetNamespace},
-		{"name": "deploy-name", "value": req.TargetDeployName},
-		{"name": "replicas", "value": fmt.Sprintf("%d", req.Replicas)},
-	}
-
-	if req.GitSecretRef != "" {
-		params = append(params, map[string]interface{}{
-			"name":  "git-secret",
-			"value": req.GitSecretRef,
-		})
-	}
-
-	if req.RegistrySecretRef != "" {
-		params = append(params, map[string]interface{}{
-			"name":  "registry-secret",
-			"value": req.RegistrySecretRef,
-		})
-	}
-
-	// Add environment variables as JSON string
-	if len(req.EnvVars) > 0 {
-		envVarsJSON, err := json.Marshal(req.EnvVars)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal env vars: %w", err)
-		}
-		params = append(params, map[string]interface{}{
-			"name":  "env-vars",
-			"value": string(envVarsJSON),
-		})
-	}
-
-	// Create PipelineRun unstructured object
-	pipelineRun := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "tekton.dev/v1",
-			"kind":       "PipelineRun",
-			"metadata": map[string]interface{}{
-				"name":      pipelineRunName,
-				"namespace": c.namespace,
-				"labels": map[string]interface{}{
-					"app.kubernetes.io/name":      "cicd-platform",
-					"app.kubernetes.io/component": "pipeline",
-					"cicd.platform/app":           req.AppName,
-					"cicd.platform/commit":        req.CommitSHA,
-				},
-			},
-			"spec": map[string]interface{}{
-				"pipelineRef": map[string]interface{}{
-					"name": "cicd-build-deploy",
-				},
-				"taskRunTemplate": map[string]interface{}{
-					"serviceAccountName": "pipeline-runner",
-				},
-				"params": params,
-				"workspaces": []map[string]interface{}{
-					{
-						"name": "source-ws",
-						"volumeClaimTemplate": map[string]interface{}{
-							"spec": map[string]interface{}{
-								"accessModes": []string{"ReadWriteOnce"},
-								"resources": map[string]interface{}{
-									"requests": map[string]interface{}{
-										"storage": "1Gi",
-									},
-								},
-							},
-						},
-					},
-					{
-						"name": "dockerconfig-ws",
-						"secret": map[string]interface{}{
-							"secretName": "kaniko-docker-config-ssl-manual",
-						},
-					},
-				},
-			},
-		},
-	}
-
-	_, err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Create(ctx, pipelineRun, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to create PipelineRun: %w", err)
-	}
-
-	return pipelineRunName, nil
-}
 
 // CreateBuildPipelineRun creates a build-only Tekton PipelineRun using dynamic client
 func (c *Client) CreateBuildPipelineRun(ctx context.Context, req *BuildPipelineRunRequest) (string, error) {
@@ -599,6 +482,46 @@ func (c *Client) GetTaskRunsForPipelineRun(ctx context.Context, pipelineRunName 
 			taskName = taskRunName
 		}
 
+		// Extract status
+		var taskRunStatus string
+		var startedAt, finishedAt *time.Time
+		
+		conditions, found, err := unstructured.NestedSlice(item.Object, "status", "conditions")
+		if found && err == nil && len(conditions) > 0 {
+			latestCondition := conditions[len(conditions)-1].(map[string]interface{})
+			condType, _, _ := unstructured.NestedString(latestCondition, "type")
+			condStatus, _, _ := unstructured.NestedString(latestCondition, "status")
+			reason, _, _ := unstructured.NestedString(latestCondition, "reason")
+
+			if condType == "Succeeded" {
+				if condStatus == "True" {
+					taskRunStatus = "Succeeded"
+				} else if condStatus == "False" {
+					taskRunStatus = "Failed"
+				} else {
+					taskRunStatus = "Running"
+				}
+			} else if reason == "Running" || reason == "Started" {
+				taskRunStatus = "Running"
+			} else {
+				taskRunStatus = "Pending"
+			}
+		} else {
+			taskRunStatus = "Pending"
+		}
+
+		// Extract timing info
+		if startTimeStr, exists, _ := unstructured.NestedString(item.Object, "status", "startTime"); exists {
+			if startTime, err := time.Parse(time.RFC3339, startTimeStr); err == nil {
+				startedAt = &startTime
+			}
+		}
+		if completeTimeStr, exists, _ := unstructured.NestedString(item.Object, "status", "completionTime"); exists {
+			if completeTime, err := time.Parse(time.RFC3339, completeTimeStr); err == nil {
+				finishedAt = &completeTime
+			}
+		}
+
 		// Get pods for this TaskRun
 		pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("tekton.dev/taskRun=%s", taskRunName),
@@ -622,6 +545,9 @@ func (c *Client) GetTaskRunsForPipelineRun(ctx context.Context, pipelineRunName 
 					TaskName:    taskName,
 					PodName:     pod.Name,
 					Containers:  containers,
+					Status:      taskRunStatus,
+					StartedAt:   startedAt,
+					FinishedAt:  finishedAt,
 				})
 			}
 		}
@@ -831,10 +757,59 @@ func (c *Client) GetTaskRunStatus(ctx context.Context, taskRunName string) (*Tas
 	}, nil
 }
 
-// GetCompletedPodLogs retrieves full logs for a completed pod
+// GetCompletedPodLogs retrieves full logs for a completed pod with retry logic
 func (c *Client) GetCompletedPodLogs(ctx context.Context, podName, containerName string) (string, error) {
-	// Use the existing GetPodLogs method but ensure it gets complete logs (not streaming)
-	return c.GetPodLogs(ctx, podName, containerName)
+	// First check if the pod exists
+	pod, err := c.clientset.CoreV1().Pods(c.namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return "", fmt.Errorf("pod %s not found - it may have been cleaned up by Tekton", podName)
+		}
+		return "", fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Check container status
+	var containerStatus *v1.ContainerStatus
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == containerName {
+			containerStatus = &status
+			break
+		}
+	}
+
+	if containerStatus == nil {
+		return "", fmt.Errorf("container %s not found in pod %s", containerName, podName)
+	}
+
+	// Check if container is still running or waiting
+	if containerStatus.State.Waiting != nil {
+		return "", fmt.Errorf("container is still waiting: %s", containerStatus.State.Waiting.Reason)
+	}
+
+	// Try to get logs with retry
+	maxRetries := 3
+	var lastErr error
+	
+	for i := 0; i < maxRetries; i++ {
+		logs, err := c.GetPodLogs(ctx, podName, containerName)
+		if err == nil {
+			return logs, nil
+		}
+		
+		lastErr = err
+		
+		// Don't retry if pod/container doesn't exist
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist") {
+			break
+		}
+		
+		// Wait before retry with exponential backoff
+		if i < maxRetries-1 {
+			time.Sleep(time.Second * time.Duration(i+1))
+		}
+	}
+	
+	return "", fmt.Errorf("failed to get logs after %d attempts: %w", maxRetries, lastErr)
 }
 
 // cleanupOldFailedPipelineRuns removes old failed PipelineRuns for the same app/commit to prevent resource accumulation

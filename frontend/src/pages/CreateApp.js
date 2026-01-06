@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message, Space, Select, Divider, InputNumber } from 'antd';
-import { ArrowLeftOutlined, PlusOutlined, MinusCircleOutlined } from '@ant-design/icons';
+import { Form, Input, Button, Card, message, Space, Select } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
 
@@ -46,8 +46,6 @@ const CreateApp = () => {
             default_branch: 'main',
             build_type: 'dockerfile',
             dockerfile_path: 'Dockerfile',
-            context_path: '.',
-            replicas: 1,
           }}
           onValuesChange={(changedValues) => {
             if (changedValues.build_type) {
@@ -111,105 +109,6 @@ const CreateApp = () => {
             <Input placeholder={buildType === 'docker-compose' ? 'docker-compose.yml' : 'Dockerfile'} />
           </Form.Item>
 
-          <Form.Item
-            label="Build Context Path"
-            name="context_path"
-            tooltip="Build context directory relative to repository root"
-          >
-            <Input placeholder="." />
-          </Form.Item>
-
-          <Form.Item
-            label="Container Registry Repository"
-            name="registry_repo"
-            rules={[{ required: true, message: 'Please enter registry repository' }]}
-          >
-            <Input placeholder="harbor.company.com/team/my-app" />
-          </Form.Item>
-
-          <Form.Item
-            label="Target Kubernetes Namespace"
-            name="target_namespace"
-            rules={[{ required: true, message: 'Please enter target namespace' }]}
-          >
-            <Input placeholder="production" />
-          </Form.Item>
-
-          <Form.Item
-            label="Target Deployment Name"
-            name="target_deploy_name"
-            rules={[{ required: true, message: 'Please enter deployment name' }]}
-          >
-            <Input placeholder="my-app" />
-          </Form.Item>
-
-          <Form.Item
-            label="Replicas"
-            name="replicas"
-            tooltip="Number of pod replicas to deploy"
-            rules={[
-              { required: true, message: 'Please enter number of replicas' },
-              { type: 'number', min: 1, max: 100, message: 'Replicas must be between 1 and 100' }
-            ]}
-          >
-            <InputNumber min={1} max={100} style={{ width: '100%' }} placeholder="1" />
-          </Form.Item>
-
-          <Form.Item
-            label="Git Secret Reference (Optional)"
-            name="git_secret_ref"
-            tooltip="Kubernetes secret containing Git credentials"
-          >
-            <Input placeholder="git-credentials" />
-          </Form.Item>
-
-          <Form.Item
-            label="Registry Secret Reference (Optional)"
-            name="registry_secret_ref"
-            tooltip="Kubernetes secret containing registry credentials"
-          >
-            <Input placeholder="registry-credentials" />
-          </Form.Item>
-
-          <Divider orientation="left">Environment Variables (Optional)</Divider>
-
-          <Form.List name="env_vars">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map(({ key, name, ...restField }) => (
-                  <Space
-                    key={key}
-                    style={{ display: 'flex', marginBottom: 8 }}
-                    align="baseline"
-                  >
-                    <Form.Item
-                      {...restField}
-                      name={[name, 'name']}
-                      rules={[
-                        { required: true, message: 'Variable name required' },
-                        { pattern: /^[A-Z_][A-Z0-9_]*$/, message: 'Use uppercase letters, numbers, and underscores' }
-                      ]}
-                    >
-                      <Input placeholder="VARIABLE_NAME" style={{ width: 200 }} />
-                    </Form.Item>
-                    <Form.Item
-                      {...restField}
-                      name={[name, 'value']}
-                      rules={[{ required: true, message: 'Value required' }]}
-                    >
-                      <Input placeholder="value" style={{ width: 300 }} />
-                    </Form.Item>
-                    <MinusCircleOutlined onClick={() => remove(name)} />
-                  </Space>
-                ))}
-                <Form.Item>
-                  <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
-                    Add Environment Variable
-                  </Button>
-                </Form.Item>
-              </>
-            )}
-          </Form.List>
 
           <Form.Item>
             <Space>

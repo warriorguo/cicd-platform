@@ -85,11 +85,8 @@ const BuildDetails = () => {
       const logsResponse = await appsAPI.getBuildLogs(id);
       setBuildLogs(logsResponse.data.logs || []);
       
-      // Stop auto refresh if build is completed
-      if (statusResponse.data.overall_status === 'success' || 
-          statusResponse.data.overall_status === 'failed') {
-        setAutoRefresh(false);
-      }
+      // Note: Keep auto refresh state as user preference
+      // User can manually toggle it if needed
     } catch (error) {
       message.error('Failed to fetch build data');
     } finally {
@@ -129,14 +126,9 @@ const BuildDetails = () => {
     }
   };
 
-  const handleDeploy = async () => {
-    try {
-      await appsAPI.deployRelease(id);
-      message.success('Deployment initiated');
-      navigate(`/releases/${id}/deploy`);
-    } catch (error) {
-      message.error('Failed to start deployment');
-    }
+  const handleDeploy = () => {
+    // Navigate to deploy page for configuration
+    navigate(`/releases/${id}/deploy`);
   };
 
   const formatDuration = (startTime, endTime) => {
@@ -185,7 +177,7 @@ const BuildDetails = () => {
               type={autoRefresh ? "primary" : "default"}
               onClick={toggleAutoRefresh}
             >
-              Auto Refresh {autoRefresh && isRunning ? '(ON)' : '(OFF)'}
+              Auto Refresh {autoRefresh ? '(ON)' : '(OFF)'}
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => fetchAllData()}>
               Refresh

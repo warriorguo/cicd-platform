@@ -12,7 +12,13 @@ import {
   message,
   Spin,
   Row,
-  Col
+  Col,
+  Modal,
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Table
 } from 'antd';
 import { 
   ArrowLeftOutlined, 
@@ -22,7 +28,10 @@ import {
   ExclamationCircleOutlined,
   ClockCircleOutlined,
   RollbackOutlined,
-  BuildOutlined
+  BuildOutlined,
+  PlusOutlined,
+  DeleteOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import { Link, useParams } from 'react-router-dom';
 import { appsAPI, createWebSocketConnection } from '../services/api';
@@ -37,6 +46,8 @@ const DeployDetails = () => {
   const [loading, setLoading] = useState(false);
   const [wsConnection, setWsConnection] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [deployModalVisible, setDeployModalVisible] = useState(false);
+  const [deployForm] = Form.useForm();
   const intervalRef = useRef(null);
 
   useEffect(() => {
@@ -121,13 +132,32 @@ const DeployDetails = () => {
     }
   };
 
-  const handleDeploy = async () => {
+  const showDeployModal = () => {
+    // Initialize form with default values
+    deployForm.setFieldsValue({
+      replicas: 1,
+      env_vars: []
+    });
+    setDeployModalVisible(true);
+  };
+
+  const handleDeploy = async (deployParams) => {
     try {
-      await appsAPI.deployRelease(id);
+      await appsAPI.deployRelease(id, deployParams);
       message.success('Deployment initiated');
+      setDeployModalVisible(false);
       setAutoRefresh(true);
     } catch (error) {
       message.error('Failed to start deployment');
+    }
+  };
+
+  const handleDeployModalOk = async () => {
+    try {
+      const values = await deployForm.validateFields();
+      await handleDeploy(values);
+    } catch (error) {
+      // Validation failed
     }
   };
 
@@ -243,7 +273,7 @@ const DeployDetails = () => {
               <Button 
                 type="primary"
                 icon={<PlayCircleOutlined />}
-                onClick={handleDeploy}
+                onClick={showDeployModal}
               >
                 Deploy
               </Button>
@@ -347,7 +377,7 @@ const DeployDetails = () => {
             description="The build has completed successfully. Click the Deploy button to start the deployment process."
             showIcon
             action={
-              <Button type="primary" onClick={handleDeploy}>
+              <Button type="primary" onClick={showDeployModal}>
                 Deploy Now
               </Button>
             }
@@ -390,6 +420,100 @@ const DeployDetails = () => {
           />
         )}
       </Card>
+
+      {/* Deploy Configuration Modal */}
+      <Modal
+        title={
+          <Space>
+            <SettingOutlined />
+            Deploy Configuration - Release #{release?.id}
+          </Space>
+        }
+        visible={deployModalVisible}
+        onOk={handleDeployModalOk}
+        onCancel={() => setDeployModalVisible(false)}
+        width={600}
+        okText="Deploy"
+        cancelText="Cancel"
+      >
+        <Form
+          form={deployForm}
+          layout="vertical"
+          initialValues={{
+            replicas: 1,
+            env_vars: []
+          }}
+        >
+          <Form.Item
+            label="Replicas"
+            name="replicas"
+            rules={[{ required: true, message: 'Please enter number of replicas' }]}
+            help="Number of pod replicas to run"
+          >
+            <InputNumber min={1} max={100} style={{ width: '100%' }} />
+          </Form.Item>
+
+          <Form.Item
+            label="Environment Variables"
+            help="Configure runtime environment variables for the deployment"
+          >
+            <Form.List name="env_vars">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <Space
+                      key={key}
+                      style={{
+                        display: 'flex',
+                        marginBottom: 8,
+                        alignItems: 'flex-start',
+                      }}
+                      align="baseline"
+                    >
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'name']}
+                        rules={[
+                          { required: true, message: 'Missing variable name' },
+                          { pattern: /^[A-Z_][A-Z0-9_]*$/i, message: 'Invalid variable name' }
+                        ]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Name" />
+                      </Form.Item>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'value']}
+                        rules={[{ required: true, message: 'Missing variable value' }]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Value" />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(name)}
+                        danger
+                        size="small"
+                      />
+                    </Space>
+                  ))}
+                  <Form.Item>
+                    <Button
+                      type="dashed"
+                      onClick={() => add()}
+                      block
+                      icon={<PlusOutlined />}
+                    >
+                      Add Environment Variable
+                    </Button>
+                  </Form.Item>
+                </>
+              )}
+            </Form.List>
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };

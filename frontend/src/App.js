@@ -1,13 +1,12 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout, Menu } from 'antd';
-import { AppstoreOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
+import { AppstoreOutlined } from '@ant-design/icons';
 import { Link, useLocation } from 'react-router-dom';
 
 import AppsList from './pages/AppsList';
 import AppDetails from './pages/AppDetails';
 import CreateApp from './pages/CreateApp';
-import ReleaseDetails from './pages/ReleaseDetails';
 import BuildDetails from './pages/BuildDetails';
 import DeployDetails from './pages/DeployDetails';
 
@@ -42,7 +41,6 @@ function App() {
               <Route path="/apps" element={<AppsList />} />
               <Route path="/apps/new" element={<CreateApp />} />
               <Route path="/apps/:id" element={<AppDetails />} />
-              <Route path="/releases/:id" element={<ReleaseDetails />} />
               <Route path="/releases/:id/build" element={<BuildDetails />} />
               <Route path="/releases/:id/deploy" element={<DeployDetails />} />
             </Routes>

@@ -29,6 +29,7 @@ func SetupRoutes(handler *Handler) *gin.Engine {
 		api.GET("/apps", handler.ListApps)
 		api.GET("/apps/:id", handler.GetApp)
 		api.GET("/apps/:id/branches", handler.GetAppBranches)
+		api.GET("/apps/:id/deployments", handler.GetAppDeployments)
 		api.POST("/apps/:id/validate", handler.ValidateDockerfile)
 
 		// Releases

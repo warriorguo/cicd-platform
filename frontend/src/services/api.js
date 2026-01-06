@@ -38,13 +38,14 @@ export const appsAPI = {
   getApps: () => api.get('/apps'),
   getApp: (id) => api.get(`/apps/${id}`),
   getAppBranches: (id) => api.get(`/apps/${id}/branches`),
+  getAppDeployments: (id) => api.get(`/apps/${id}/deployments`),
   validateDockerfile: (id, branch) => api.post(`/apps/${id}/validate?branch=${branch || ''}`),
   
   // Releases
   createRelease: (appId, data) => api.post(`/apps/${appId}/releases`, data),
   getReleases: (appId, page = 1, limit = 10) => api.get(`/apps/${appId}/releases?page=${page}&limit=${limit}`),
   getRelease: (id) => api.get(`/releases/${id}`),
-  deployRelease: (id) => api.post(`/releases/${id}/deploy`),
+  deployRelease: (id, data) => api.post(`/releases/${id}/deploy`, data),
   rollbackRelease: (id) => api.post(`/releases/${id}/rollback`),
   
   // Build Monitoring

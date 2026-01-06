@@ -15,37 +15,32 @@ import (
 	"github.com/warriorguo/cicd-platform/backend/internal/git"
 	"github.com/warriorguo/cicd-platform/backend/internal/k8s"
 	"github.com/warriorguo/cicd-platform/backend/internal/models"
+	"github.com/warriorguo/cicd-platform/backend/pkg/config"
 )
 
 type Handler struct {
 	db        *gorm.DB
 	gitClient *git.Client
 	k8sClient *k8s.Client
+	config    *config.Config
 }
 
-func NewHandler(db *gorm.DB, gitClient *git.Client, k8sClient *k8s.Client) *Handler {
+func NewHandler(db *gorm.DB, gitClient *git.Client, k8sClient *k8s.Client, cfg *config.Config) *Handler {
 	return &Handler{
 		db:        db,
 		gitClient: gitClient,
 		k8sClient: k8sClient,
+		config:    cfg,
 	}
 }
 
 func (h *Handler) CreateApp(c *gin.Context) {
 	var req struct {
-		Name              string            `json:"name" binding:"required"`
-		GitURL            string            `json:"git_url" binding:"required"`
-		DefaultBranch     string            `json:"default_branch"`
-		BuildType         models.BuildType  `json:"build_type"`
-		DockerfilePath    string            `json:"dockerfile_path"`
-		ContextPath       string            `json:"context_path"`
-		RegistryRepo      string            `json:"registry_repo" binding:"required"`
-		TargetNamespace   string            `json:"target_namespace" binding:"required"`
-		TargetDeployName  string            `json:"target_deploy_name" binding:"required"`
-		Replicas          int               `json:"replicas"`
-		GitSecretRef      string            `json:"git_secret_ref"`
-		RegistrySecretRef string            `json:"registry_secret_ref"`
-		EnvVars           models.EnvVars    `json:"env_vars"`
+		Name           string           `json:"name" binding:"required"`
+		GitURL         string           `json:"git_url" binding:"required"`
+		DefaultBranch  string           `json:"default_branch"`
+		BuildType      models.BuildType `json:"build_type"`
+		DockerfilePath string           `json:"dockerfile_path"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -53,6 +48,7 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		return
 	}
 
+	// Set defaults for optional fields
 	if req.DefaultBranch == "" {
 		req.DefaultBranch = "main"
 	}
@@ -66,27 +62,24 @@ func (h *Handler) CreateApp(c *gin.Context) {
 			req.DockerfilePath = "Dockerfile"
 		}
 	}
-	if req.ContextPath == "" {
-		req.ContextPath = "."
-	}
-	if req.Replicas <= 0 {
-		req.Replicas = 1
-	}
 
+	// Generate default values from config
+	registryRepo := fmt.Sprintf("%s/%s/%s", h.config.Harbor.Endpoint, h.config.Harbor.Project, req.Name)
+	
 	app := models.App{
 		Name:              req.Name,
 		GitURL:            req.GitURL,
 		DefaultBranch:     req.DefaultBranch,
 		BuildType:         req.BuildType,
 		DockerfilePath:    req.DockerfilePath,
-		ContextPath:       req.ContextPath,
-		RegistryRepo:      req.RegistryRepo,
-		TargetNamespace:   req.TargetNamespace,
-		TargetDeployName:  req.TargetDeployName,
-		Replicas:          req.Replicas,
-		GitSecretRef:      req.GitSecretRef,
-		RegistrySecretRef: req.RegistrySecretRef,
-		EnvVars:           req.EnvVars,
+		ContextPath:       h.config.Defaults.ContextPath,
+		RegistryRepo:      registryRepo,
+		TargetNamespace:   h.config.Defaults.TargetNamespace,
+		TargetDeployName:  req.Name, // Same as application name
+		Replicas:          1,         // Default replicas, will be configurable in deploy stage
+		GitSecretRef:      h.config.Defaults.GitSecretRef,
+		RegistrySecretRef: h.config.Defaults.RegistrySecretRef,
+		EnvVars:           models.EnvVars{}, // Empty by default, will be configurable in deploy stage
 	}
 
 	if err := h.db.Create(&app).Error; err != nil {
@@ -286,6 +279,7 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 	}
 
 	// Create actual Tekton Build PipelineRun if k8s client is available
+	fmt.Printf("DEBUG: k8sClient is nil: %v\n", h.k8sClient == nil)
 	if h.k8sClient != nil {
 		buildReq := &k8s.BuildPipelineRunRequest{
 			AppName:           app.Name,
@@ -314,6 +308,7 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 		h.db.Save(&release)
 
 		// Start a goroutine to watch PipelineRun status
+		fmt.Printf("DEBUG: Starting watchBuildPipelineRun for release %d, pipelineRunName: %s\n", release.ID, pipelineRunName)
 		go h.watchBuildPipelineRun(release.ID, pipelineRunName)
 	} else {
 		// Fallback: simulate pipeline execution for development
@@ -342,12 +337,30 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 
 // watchBuildPipelineRun watches a Build PipelineRun and updates the release status with detailed stage tracking
 func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) {
+	fmt.Printf("DEBUG: watchBuildPipelineRun started for release %d, pipeline: %s\n", releaseID, pipelineRunName)
 	ctx := context.Background()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(3 * time.Second) // Reduced from 5 to 3 seconds for faster updates
 	defer ticker.Stop()
 
 	timeout := time.After(2 * time.Hour) // Max 2 hours for a build
 	trackedTaskRuns := make(map[string]models.BuildLogStatus) // TaskRun name -> last known status
+	
+	// Initial check to capture any TaskRuns that may have already completed
+	fmt.Printf("Starting build monitoring for release %d, pipeline %s\n", releaseID, pipelineRunName)
+	initialTaskRuns, err := h.k8sClient.GetTaskRunsForPipelineRun(ctx, pipelineRunName)
+	if err == nil {
+		for _, taskRun := range initialTaskRuns {
+			status := h.mapTaskRunStatus(taskRun.Status)
+			h.createOrUpdateBuildLog(releaseID, &taskRun, status)
+			trackedTaskRuns[taskRun.TaskRunName] = status
+			
+			// If already completed, capture logs immediately
+			if status == models.BuildLogStatusCompleted || status == models.BuildLogStatusFailed {
+				fmt.Printf("TaskRun %s already completed with status %s, capturing logs\n", taskRun.TaskRunName, status)
+				h.captureBuildLogs(releaseID, &taskRun)
+			}
+		}
+	}
 
 	for {
 		select {
@@ -434,6 +447,16 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 				release.Status = models.StatusFailed
 				release.FinishedAt = &now
 				h.db.Save(&release)
+				
+				// Final attempt to capture logs for all TaskRuns when pipeline fails
+				allTaskRuns, err := h.k8sClient.GetTaskRunsForPipelineRun(ctx, pipelineRunName)
+				if err == nil {
+					for _, taskRun := range allTaskRuns {
+						// Try to capture logs for any TaskRun we might have missed
+						h.captureBuildLogs(releaseID, &taskRun)
+					}
+				}
+				
 				return
 			}
 		}
@@ -442,14 +465,16 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 
 // mapTaskRunStatus maps Kubernetes TaskRun status to BuildLogStatus
 func (h *Handler) mapTaskRunStatus(status string) models.BuildLogStatus {
-	switch status {
-	case "Succeeded":
+	fmt.Printf("DEBUG: TaskRun status mapping: '%s'\n", status)
+	
+	// Tekton TaskRun statuses are in format "True Succeeded", "False Failed", etc.
+	if strings.Contains(status, "Succeeded") {
 		return models.BuildLogStatusCompleted
-	case "Failed":
+	} else if strings.Contains(status, "Failed") {
 		return models.BuildLogStatusFailed
-	case "Running":
+	} else if strings.Contains(status, "Running") {
 		return models.BuildLogStatusRunning
-	default:
+	} else {
 		return models.BuildLogStatusPending
 	}
 }
@@ -496,25 +521,31 @@ func (h *Handler) captureBuildLogs(releaseID uint, taskRun *k8s.TaskRunInfo) {
 	ctx := context.Background()
 
 	for _, containerName := range taskRun.Containers {
-		// Get the logs for this container
-		logs, err := h.k8sClient.GetCompletedPodLogs(ctx, taskRun.PodName, containerName)
-		if err != nil {
-			// Log error but continue
-			continue
-		}
-
-		// Find and update the build log with the captured logs
+		// Find the build log record first
 		var buildLog models.BuildLog
 		result := h.db.Where("release_id = ? AND task_run_name = ? AND container_name = ?", 
 			releaseID, taskRun.TaskRunName, containerName).First(&buildLog)
 
-		if result.Error == nil {
-			buildLog.LogsContent = logs
-			if err != nil {
-				buildLog.ErrorMessage = err.Error()
-			}
-			h.db.Save(&buildLog)
+		if result.Error != nil {
+			// BuildLog record doesn't exist - this shouldn't happen in normal flow
+			continue
 		}
+
+		// Get the logs for this container
+		logs, err := h.k8sClient.GetCompletedPodLogs(ctx, taskRun.PodName, containerName)
+		
+		// Update the build log with either logs or error message
+		if err != nil {
+			// Log error in the database so user can see what went wrong
+			buildLog.ErrorMessage = fmt.Sprintf("Failed to retrieve logs: %v", err.Error())
+			buildLog.LogsContent = "" // Ensure logs content is empty
+		} else {
+			buildLog.LogsContent = logs
+			buildLog.ErrorMessage = "" // Clear any previous error
+		}
+		
+		// Save the build log (with either logs or error message)
+		h.db.Save(&buildLog)
 	}
 }
 
@@ -615,6 +646,20 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 		return
 	}
 
+	var req struct {
+		Replicas int                 `json:"replicas"`
+		EnvVars  []models.EnvVar     `json:"env_vars"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Set default replicas if not provided
+	if req.Replicas <= 0 {
+		req.Replicas = 1
+	}
+
 	var release models.Release
 	if err := h.db.Preload("App").First(&release, uint(releaseID)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Release not found"})
@@ -646,8 +691,8 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			ImageTag:         release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:], // Extract tag from full image
 			TargetNamespace:  release.App.TargetNamespace,
 			TargetDeployName: release.App.TargetDeployName,
-			Replicas:         release.App.Replicas,
-			EnvVars:          release.App.EnvVars,
+			Replicas:         req.Replicas,
+			EnvVars:          req.EnvVars,
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
@@ -949,4 +994,73 @@ func (h *Handler) GetBuildLogs(c *gin.Context) {
 		"logs":       buildLogs,
 		"count":      len(buildLogs),
 	})
+}
+
+// GetAppDeployments gets the current deployment information for an application
+func (h *Handler) GetAppDeployments(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Get all deployed releases for this app
+	var deployedReleases []models.Release
+	if err := h.db.Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
+		Order("created_at DESC").
+		Find(&deployedReleases).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to fetch deployments"})
+		return
+	}
+
+	// Get Kubernetes deployment status for each deployed release
+	var deployments []gin.H
+	for _, release := range deployedReleases {
+		deploymentInfo, err := h.getKubernetesDeploymentInfo(c.Request.Context(), &app, &release)
+		if err != nil {
+			// If we can't get K8s info, still include the release info
+			deployments = append(deployments, gin.H{
+				"release_id":   release.ID,
+				"image_tag":    release.ImageTag,
+				"commit_sha":   release.CommitSHA,
+				"deployed_at":  release.FinishedAt,
+				"status":       "unknown",
+				"replicas":     gin.H{"available": 0, "ready": 0, "desired": 1},
+				"error":        err.Error(),
+			})
+			continue
+		}
+		deployments = append(deployments, deploymentInfo)
+	}
+
+	c.JSON(200, gin.H{"deployments": deployments})
+}
+
+// getKubernetesDeploymentInfo retrieves deployment information from Kubernetes
+func (h *Handler) getKubernetesDeploymentInfo(ctx context.Context, app *models.App, release *models.Release) (gin.H, error) {
+	// For now, return mock data since we need to implement K8s deployment status checking
+	// This would normally query the Kubernetes API to get actual deployment status
+	
+	deploymentInfo := gin.H{
+		"release_id":   release.ID,
+		"image_tag":    release.ImageTag,
+		"commit_sha":   release.CommitSHA,
+		"deployed_at":  release.FinishedAt,
+		"status":       "running", // This should come from K8s deployment status
+		"replicas": gin.H{
+			"desired":   1, // Should come from deployment spec
+			"available": 1, // Should come from deployment status
+			"ready":     1, // Should come from deployment status
+		},
+		"namespace":     app.TargetNamespace,
+		"deployment_name": app.TargetDeployName,
+	}
+
+	return deploymentInfo, nil
 }

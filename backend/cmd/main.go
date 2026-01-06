@@ -40,7 +40,7 @@ func main() {
 	}
 
 	// Initialize handlers
-	handler := api.NewHandler(database, gitClient, k8sClient)
+	handler := api.NewHandler(database, gitClient, k8sClient, cfg)
 
 	// Setup routes
 	router := api.SetupRoutes(handler)

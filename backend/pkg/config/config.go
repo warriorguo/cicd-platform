@@ -8,6 +8,8 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
 	K8s      K8sConfig      `mapstructure:"k8s"`
+	Harbor   HarborConfig   `mapstructure:"harbor"`
+	Defaults DefaultsConfig `mapstructure:"defaults"`
 }
 
 type ServerConfig struct {
@@ -31,6 +33,18 @@ type K8sConfig struct {
 	TektonNamespace string `mapstructure:"tekton_namespace"`
 }
 
+type HarborConfig struct {
+	Endpoint string `mapstructure:"endpoint"`
+	Project  string `mapstructure:"project"`
+}
+
+type DefaultsConfig struct {
+	TargetNamespace   string `mapstructure:"target_namespace"`
+	ContextPath       string `mapstructure:"context_path"`
+	GitSecretRef      string `mapstructure:"git_secret_ref"`
+	RegistrySecretRef string `mapstructure:"registry_secret_ref"`
+}
+
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -48,6 +62,12 @@ func Load() (*Config, error) {
 	viper.SetDefault("k8s.in_cluster", false)
 	viper.SetDefault("k8s.pipeline_namespace", "cicd-runners")
 	viper.SetDefault("k8s.tekton_namespace", "tekton-pipelines")
+	viper.SetDefault("harbor.endpoint", "harbor.example.com")
+	viper.SetDefault("harbor.project", "library")
+	viper.SetDefault("defaults.target_namespace", "default")
+	viper.SetDefault("defaults.context_path", ".")
+	viper.SetDefault("defaults.git_secret_ref", "")
+	viper.SetDefault("defaults.registry_secret_ref", "")
 
 	viper.AutomaticEnv()
 
