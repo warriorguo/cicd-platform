@@ -39,6 +39,16 @@ export const appsAPI = {
   getApp: (id) => api.get(`/apps/${id}`),
   getAppBranches: (id) => api.get(`/apps/${id}/branches`),
   getAppDeployments: (id) => api.get(`/apps/${id}/deployments`),
+  scaleDeployment: (id, data) => api.post(`/apps/${id}/scale`, data),
+  getPodLogs: (appId, podName, container) => {
+    const params = container ? `?container=${container}` : '';
+    return api.get(`/apps/${appId}/pods/${podName}/logs${params}`);
+  },
+  downloadPodLogs: (appId, podName, container) => {
+    const params = container ? `?container=${container}&download=true` : '?download=true';
+    return `${API_BASE_URL}/apps/${appId}/pods/${podName}/logs${params}`;
+  },
+  getPodDescribe: (appId, podName) => api.get(`/apps/${appId}/pods/${podName}/describe`),
   validateDockerfile: (id, branch) => api.post(`/apps/${id}/validate?branch=${branch || ''}`),
   
   // Releases

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"gorm.io/gorm"
 
 	"github.com/warriorguo/cicd-platform/backend/internal/git"
@@ -647,17 +648,12 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 	}
 
 	var req struct {
-		Replicas int                 `json:"replicas"`
-		EnvVars  []models.EnvVar     `json:"env_vars"`
+		EnvVars        []models.EnvVar `json:"env_vars"`
+		MaxUnavailable int             `json:"maxUnavailable"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
-	}
-
-	// Set default replicas if not provided
-	if req.Replicas <= 0 {
-		req.Replicas = 1
 	}
 
 	var release models.Release
@@ -669,6 +665,20 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 	if release.Status != models.StatusSuccess {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Can only deploy successful builds"})
 		return
+	}
+
+	// For upgrade operation, determine replicas based on existing deployment
+	replicas := 1 // Default for new deployment
+	var lastDeployed models.Release
+	if err := h.db.Where("app_id = ? AND status = ?", release.AppID, models.StatusDeployed).
+		Order("created_at DESC").
+		First(&lastDeployed).Error; err == nil {
+		// If there's an existing deployment, get actual replica count from Kubernetes
+		if h.k8sClient != nil {
+			if desired, _, err := h.k8sClient.GetDeploymentReplicas(c.Request.Context(), release.App.TargetNamespace, release.App.TargetDeployName); err == nil {
+				replicas = int(desired)
+			}
+		}
 	}
 
 	// Check if there's already a deployment running for this app
@@ -685,14 +695,21 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 
 	// Create actual Tekton Deploy PipelineRun if k8s client is available
 	if h.k8sClient != nil {
+		// Set default maxUnavailable if not provided
+		maxUnavailable := req.MaxUnavailable
+		if maxUnavailable == 0 {
+			maxUnavailable = 25 // Default to 25%
+		}
+
 		deployReq := &k8s.DeployPipelineRunRequest{
 			AppName:          release.App.Name,
 			ImageRepo:        release.App.RegistryRepo,
 			ImageTag:         release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:], // Extract tag from full image
 			TargetNamespace:  release.App.TargetNamespace,
 			TargetDeployName: release.App.TargetDeployName,
-			Replicas:         req.Replicas,
+			Replicas:         replicas,
 			EnvVars:          req.EnvVars,
+			MaxUnavailable:   maxUnavailable,
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
@@ -1010,32 +1027,35 @@ func (h *Handler) GetAppDeployments(c *gin.Context) {
 		return
 	}
 
-	// Get all deployed releases for this app
-	var deployedReleases []models.Release
+	// Get the most recent deployed release for this app (only one should be active)
+	var deployedRelease models.Release
 	if err := h.db.Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
 		Order("created_at DESC").
-		Find(&deployedReleases).Error; err != nil {
+		First(&deployedRelease).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// No deployed releases found
+			c.JSON(200, gin.H{"deployments": []gin.H{}})
+			return
+		}
 		c.JSON(500, gin.H{"error": "Failed to fetch deployments"})
 		return
 	}
 
-	// Get Kubernetes deployment status for each deployed release
+	// Get Kubernetes deployment status for the most recent deployed release
 	var deployments []gin.H
-	for _, release := range deployedReleases {
-		deploymentInfo, err := h.getKubernetesDeploymentInfo(c.Request.Context(), &app, &release)
-		if err != nil {
-			// If we can't get K8s info, still include the release info
-			deployments = append(deployments, gin.H{
-				"release_id":   release.ID,
-				"image_tag":    release.ImageTag,
-				"commit_sha":   release.CommitSHA,
-				"deployed_at":  release.FinishedAt,
-				"status":       "unknown",
-				"replicas":     gin.H{"available": 0, "ready": 0, "desired": 1},
-				"error":        err.Error(),
-			})
-			continue
-		}
+	deploymentInfo, err := h.getKubernetesDeploymentInfo(c.Request.Context(), &app, &deployedRelease)
+	if err != nil {
+		// If we can't get K8s info, still include the release info
+		deployments = append(deployments, gin.H{
+			"release_id":   deployedRelease.ID,
+			"image_tag":    deployedRelease.ImageTag,
+			"commit_sha":   deployedRelease.CommitSHA,
+			"deployed_at":  deployedRelease.FinishedAt,
+			"status":       "unknown",
+			"replicas":     gin.H{"available": 0, "ready": 0, "desired": 1},
+			"error":        err.Error(),
+		})
+	} else {
 		deployments = append(deployments, deploymentInfo)
 	}
 
@@ -1044,23 +1064,246 @@ func (h *Handler) GetAppDeployments(c *gin.Context) {
 
 // getKubernetesDeploymentInfo retrieves deployment information from Kubernetes
 func (h *Handler) getKubernetesDeploymentInfo(ctx context.Context, app *models.App, release *models.Release) (gin.H, error) {
-	// For now, return mock data since we need to implement K8s deployment status checking
-	// This would normally query the Kubernetes API to get actual deployment status
+	var desiredReplicas int32 = 1
+	var readyReplicas int32 = 0
+	
+	// Get actual replica count from Kubernetes if client is available
+	if h.k8sClient != nil {
+		desired, ready, err := h.k8sClient.GetDeploymentReplicas(ctx, app.TargetNamespace, app.TargetDeployName)
+		if err != nil {
+			// Log error but continue with default values
+			fmt.Printf("Failed to get deployment replicas: %v\n", err)
+		} else {
+			desiredReplicas = desired
+			readyReplicas = ready
+		}
+	}
+	
+	// Get individual pod details
+	var pods []gin.H
+	if h.k8sClient != nil {
+		podDetails, err := h.k8sClient.GetDeploymentPods(ctx, app.TargetNamespace, app.TargetDeployName)
+		if err != nil {
+			fmt.Printf("Failed to get deployment pods: %v\n", err)
+		} else {
+			pods = podDetails
+		}
+	}
 	
 	deploymentInfo := gin.H{
 		"release_id":   release.ID,
 		"image_tag":    release.ImageTag,
 		"commit_sha":   release.CommitSHA,
 		"deployed_at":  release.FinishedAt,
-		"status":       "running", // This should come from K8s deployment status
+		"status":       "running", // TODO: Get actual status from K8s
 		"replicas": gin.H{
-			"desired":   1, // Should come from deployment spec
-			"available": 1, // Should come from deployment status
-			"ready":     1, // Should come from deployment status
+			"desired":   desiredReplicas,
+			"available": readyReplicas,
+			"ready":     readyReplicas,
 		},
 		"namespace":     app.TargetNamespace,
 		"deployment_name": app.TargetDeployName,
+		"pods":         pods,
 	}
 
 	return deploymentInfo, nil
+}
+
+// ScaleDeployment scales an existing deployment
+func (h *Handler) ScaleDeployment(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	var req struct {
+		Replicas int `json:"replicas" binding:"required,min=0,max=100"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Check if there's already a deployed release
+	var lastDeployed models.Release
+	if err := h.db.Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
+		Order("created_at DESC").
+		First(&lastDeployed).Error; err != nil {
+		c.JSON(400, gin.H{"error": "No deployed release found to scale"})
+		return
+	}
+
+	// Perform the actual scaling operation
+	if h.k8sClient != nil {
+		fmt.Printf("DEBUG: Scaling deployment %s in namespace %s to %d replicas\n", app.TargetDeployName, app.TargetNamespace, req.Replicas)
+		err := h.k8sClient.ScaleDeployment(c.Request.Context(), app.TargetNamespace, app.TargetDeployName, int32(req.Replicas))
+		if err != nil {
+			fmt.Printf("ERROR: Failed to scale deployment: %v\n", err)
+			c.JSON(500, gin.H{"error": fmt.Sprintf("Failed to scale deployment: %v", err)})
+			return
+		}
+		fmt.Printf("DEBUG: Successfully scaled deployment\n")
+	} else {
+		fmt.Printf("ERROR: Kubernetes client not available\n")
+		c.JSON(500, gin.H{"error": "Kubernetes client not available"})
+		return
+	}
+	
+	c.JSON(200, gin.H{
+		"message": "Deployment scaled successfully",
+		"app_id": appID,
+		"replicas": req.Replicas,
+		"release_id": lastDeployed.ID,
+		"namespace": app.TargetNamespace,
+		"deployment": app.TargetDeployName,
+	})
+}
+
+// GetPodLogs gets logs for a specific pod
+func (h *Handler) GetPodLogs(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	podName := c.Param("podName")
+	if podName == "" {
+		c.JSON(400, gin.H{"error": "Pod name is required"})
+		return
+	}
+
+	// Get container name from query parameter, default to first container
+	containerName := c.Query("container")
+	
+	// Get the application to determine namespace
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	if h.k8sClient == nil {
+		c.JSON(500, gin.H{"error": "Kubernetes client not available"})
+		return
+	}
+
+	// If no container specified, get the first container from the pod
+	if containerName == "" {
+		pods, err := h.k8sClient.GetDeploymentPods(c.Request.Context(), app.TargetNamespace, app.TargetDeployName)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Failed to get pods information"})
+			return
+		}
+		
+		// Find the specific pod and get its first container
+		for _, pod := range pods {
+			if podInfo, ok := pod["name"].(string); ok && podInfo == podName {
+				// For deployment pods, we can assume the main container has the same name as the deployment
+				containerName = app.TargetDeployName
+				break
+			}
+		}
+		
+		// Fallback to deployment name if we couldn't find the pod
+		if containerName == "" {
+			containerName = app.TargetDeployName
+		}
+	}
+
+	// Get pod logs from the correct namespace
+	logs, err := h.k8sClient.GetPodLogsInNamespace(c.Request.Context(), app.TargetNamespace, podName, containerName)
+	if err != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("Failed to get pod logs: %v", err)})
+		return
+	}
+
+	// Check if download is requested
+	if c.Query("download") == "true" {
+		// Set headers for file download
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s-%s.log\"", podName, containerName))
+		c.Header("Content-Type", "text/plain")
+		c.String(200, logs)
+		return
+	}
+
+	// Return logs as JSON
+	c.JSON(200, gin.H{
+		"pod_name": podName,
+		"container_name": containerName,
+		"namespace": app.TargetNamespace,
+		"logs": logs,
+	})
+}
+
+
+// GetPodTTY handles WebSocket connections for pod TTY
+func (h *Handler) GetPodTTY(c *gin.Context) {
+	appId := c.Param("id")
+	podName := c.Param("podName")
+	containerName := c.Query("container")
+
+	// Get app to determine namespace
+	var app models.App
+	if err := h.db.First(&app, appId).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Default to first container if not specified
+	if containerName == "" {
+		containerName = "main"
+	}
+
+	// Upgrade HTTP connection to WebSocket
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to upgrade to WebSocket"})
+		return
+	}
+	defer conn.Close()
+
+	// Execute TTY in pod
+	ctx := context.Background()
+	err = h.k8sClient.ExecPodTTY(ctx, app.TargetNamespace, podName, containerName, conn)
+	if err != nil {
+		// Send error message to client before closing
+		conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Error: %s\r\n", err.Error())))
+		return
+	}
+}
+
+// GetPodDescribe returns detailed pod information including events
+func (h *Handler) GetPodDescribe(c *gin.Context) {
+	appId := c.Param("id")
+	podName := c.Param("podName")
+
+	// Get app to determine namespace
+	var app models.App
+	if err := h.db.First(&app, appId).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Get pod description
+	ctx := context.Background()
+	describe, err := h.k8sClient.GetPodDescribe(ctx, app.TargetNamespace, podName)
+	if err != nil {
+		c.JSON(500, gin.H{"error": fmt.Sprintf("Failed to describe pod: %s", err.Error())})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"pod_name":  podName,
+		"namespace": app.TargetNamespace,
+		"describe":  describe,
+	})
 }

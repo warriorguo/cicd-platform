@@ -10,12 +10,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
+	"k8s.io/client-go/tools/remotecommand"
+	"k8s.io/kubectl/pkg/scheme"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -27,6 +32,7 @@ type Client struct {
 	clientset     *kubernetes.Clientset
 	// tektonClient  *tektonclient.Clientset
 	dynamicClient dynamic.Interface
+	config        *rest.Config
 	namespace     string
 }
 
@@ -68,6 +74,7 @@ func NewClient(inCluster bool, kubeconfig, namespace string) (*Client, error) {
 		clientset:     clientset,
 		// tektonClient:  tektonClient,
 		dynamicClient: dynamicClient,
+		config:        config,
 		namespace:     namespace,
 	}, nil
 }
@@ -119,7 +126,12 @@ func NewClient(inCluster bool, kubeconfig, namespace string) (*Client, error) {
 // }
 
 func (c *Client) GetPodLogs(ctx context.Context, podName, containerName string) (string, error) {
-	req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &v1.PodLogOptions{
+	return c.GetPodLogsInNamespace(ctx, c.namespace, podName, containerName)
+}
+
+// GetPodLogsInNamespace gets pod logs from a specific namespace
+func (c *Client) GetPodLogsInNamespace(ctx context.Context, namespace, podName, containerName string) (string, error) {
+	req := c.clientset.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{
 		Container: containerName,
 	})
 
@@ -327,6 +339,7 @@ func (c *Client) CreateDeployPipelineRun(ctx context.Context, req *DeployPipelin
 		{"name": "deploy-namespace", "value": req.TargetNamespace},
 		{"name": "deploy-name", "value": req.TargetDeployName},
 		{"name": "replicas", "value": fmt.Sprintf("%d", req.Replicas)},
+		{"name": "max-unavailable", "value": fmt.Sprintf("%d%%", req.MaxUnavailable)},
 	}
 
 	// Add environment variables as JSON string
@@ -871,4 +884,577 @@ func (c *Client) cleanupOldFailedPipelineRuns(ctx context.Context, appName, shor
 			}
 		}
 	}
+}
+
+// ScaleDeployment scales a deployment to the specified number of replicas
+func (c *Client) ScaleDeployment(ctx context.Context, namespace, deploymentName string, replicas int32) error {
+	deploymentsRes := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	// Get current deployment
+	deployment, err := c.dynamicClient.Resource(deploymentsRes).Namespace(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+
+	// Update replicas
+	if err := unstructured.SetNestedField(deployment.Object, int64(replicas), "spec", "replicas"); err != nil {
+		return fmt.Errorf("failed to set replicas: %w", err)
+	}
+
+	// Apply the update
+	_, err = c.dynamicClient.Resource(deploymentsRes).Namespace(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update deployment: %w", err)
+	}
+
+	return nil
+}
+
+// GetDeploymentReplicas gets the current replica count for a deployment
+func (c *Client) GetDeploymentReplicas(ctx context.Context, namespace, deploymentName string) (int32, int32, error) {
+	deploymentsRes := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	deployment, err := c.dynamicClient.Resource(deploymentsRes).Namespace(namespace).Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
+	}
+
+	// Get desired replicas from spec
+	specReplicas, found, err := unstructured.NestedInt64(deployment.Object, "spec", "replicas")
+	if !found || err != nil {
+		return 0, 0, fmt.Errorf("failed to get spec replicas: %w", err)
+	}
+
+	// Get ready replicas from status
+	readyReplicas, _, _ := unstructured.NestedInt64(deployment.Object, "status", "readyReplicas")
+
+	return int32(specReplicas), int32(readyReplicas), nil
+}
+
+// GetDeploymentPods gets information about all pods belonging to a deployment
+func (c *Client) GetDeploymentPods(ctx context.Context, namespace, deploymentName string) ([]gin.H, error) {
+	// Get pods by label selector (app=deploymentName)
+	pods, err := c.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", deploymentName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods for deployment %s: %w", deploymentName, err)
+	}
+
+	var podInfos []gin.H
+	for _, pod := range pods.Items {
+		var status string
+		var ready bool = false
+
+		// Determine pod status
+		switch pod.Status.Phase {
+		case v1.PodPending:
+			status = "Pending"
+		case v1.PodRunning:
+			status = "Running"
+			// Check if all containers are ready
+			ready = true
+			for _, containerStatus := range pod.Status.ContainerStatuses {
+				if !containerStatus.Ready {
+					ready = false
+					break
+				}
+			}
+		case v1.PodSucceeded:
+			status = "Succeeded"
+		case v1.PodFailed:
+			status = "Failed"
+		default:
+			status = "Unknown"
+		}
+
+		// Override status if there are issues with containers
+		for _, containerStatus := range pod.Status.ContainerStatuses {
+			if containerStatus.State.Waiting != nil {
+				status = "Pending"
+				ready = false
+			} else if containerStatus.State.Terminated != nil {
+				if containerStatus.State.Terminated.ExitCode != 0 {
+					status = "Failed"
+					ready = false
+				}
+			}
+		}
+
+		// Extract ReplicaSet information
+		replicaSetName := ""
+		if ownerRefs := pod.GetOwnerReferences(); len(ownerRefs) > 0 {
+			for _, ref := range ownerRefs {
+				if ref.Kind == "ReplicaSet" {
+					replicaSetName = ref.Name
+					break
+				}
+			}
+		}
+
+		// Extract image information from the first container
+		var image string
+		var imageTag string
+		if len(pod.Spec.Containers) > 0 {
+			image = pod.Spec.Containers[0].Image
+			// Extract tag from image (format: registry/repo:tag)
+			if idx := strings.LastIndex(image, ":"); idx != -1 {
+				imageTag = image[idx+1:]
+			}
+		}
+
+		podInfos = append(podInfos, gin.H{
+			"name":         pod.Name,
+			"status":       status,
+			"ready":        ready,
+			"started_at":   pod.Status.StartTime,
+			"node":         pod.Spec.NodeName,
+			"replica_set":  replicaSetName,
+			"image":        image,
+			"image_tag":    imageTag,
+			"restart_count": func() int {
+				count := 0
+				for _, containerStatus := range pod.Status.ContainerStatuses {
+					count += int(containerStatus.RestartCount)
+				}
+				return count
+			}(),
+		})
+	}
+
+	return podInfos, nil
+}
+
+// TTYHandler handles WebSocket connections for pod TTY
+type TTYHandler struct {
+	conn   *websocket.Conn
+	resize chan remotecommand.TerminalSize
+}
+
+// Read implements io.Reader for websocket
+func (t *TTYHandler) Read(p []byte) (int, error) {
+	_, message, err := t.conn.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	
+	// Handle different message types (JSON messages for control)
+	var msg map[string]interface{}
+	if err := json.Unmarshal(message, &msg); err == nil {
+		if msgType, exists := msg["type"]; exists && msgType == "resize" {
+			if rows, rowsExists := msg["rows"]; rowsExists {
+				if cols, colsExists := msg["cols"]; colsExists {
+					size := remotecommand.TerminalSize{
+						Width:  uint16(cols.(float64)),
+						Height: uint16(rows.(float64)),
+					}
+					select {
+					case t.resize <- size:
+					default:
+					}
+				}
+			}
+			return 0, nil
+		}
+	}
+	
+	// For raw text messages, just pass through
+	copy(p, message)
+	return len(message), nil
+}
+
+// Write implements io.Writer for websocket
+func (t *TTYHandler) Write(p []byte) (int, error) {
+	err := t.conn.WriteMessage(websocket.TextMessage, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// Next implements TerminalSizeQueue
+func (t *TTYHandler) Next() *remotecommand.TerminalSize {
+	size := <-t.resize
+	return &size
+}
+
+// ExecPodTTY executes commands in a pod with TTY support via WebSocket
+func (c *Client) ExecPodTTY(ctx context.Context, namespace, podName, containerName string, conn *websocket.Conn) error {
+	// Prepare the API request to execute commands in a pod
+	req := c.clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(namespace).
+		SubResource("exec")
+
+	req.VersionedParams(&v1.PodExecOptions{
+		Container: containerName,
+		Command:   []string{"/bin/sh"},
+		Stdin:     true,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       true,
+	}, scheme.ParameterCodec)
+
+	// Create TTY handler
+	ttyHandler := &TTYHandler{
+		conn:   conn,
+		resize: make(chan remotecommand.TerminalSize, 1),
+	}
+
+	// Create the executor
+	exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create executor: %w", err)
+	}
+
+	// Stream the command
+	err = exec.Stream(remotecommand.StreamOptions{
+		Stdin:             ttyHandler,
+		Stdout:            ttyHandler,
+		Stderr:            ttyHandler,
+		Tty:               true,
+		TerminalSizeQueue: ttyHandler,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to stream: %w", err)
+	}
+
+	return nil
+}
+
+// GetPodDescribe gets detailed pod information matching kubectl describe pod output
+func (c *Client) GetPodDescribe(ctx context.Context, namespace, podName string) (map[string]interface{}, error) {
+	// Get the pod
+	pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Get events for this pod and related resources
+	allEvents := []corev1.Event{}
+	
+	// Get pod events
+	podEvents, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
+	})
+	if err == nil {
+		allEvents = append(allEvents, podEvents.Items...)
+	}
+
+	// Get related ReplicaSet events if pod is controlled by one
+	for _, owner := range pod.OwnerReferences {
+		if owner.Kind == "ReplicaSet" {
+			rsEvents, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+				FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=ReplicaSet", owner.Name),
+			})
+			if err == nil {
+				allEvents = append(allEvents, rsEvents.Items...)
+			}
+
+			// Get Deployment events if ReplicaSet is controlled by one
+			rs, err := c.clientset.AppsV1().ReplicaSets(namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+			if err == nil {
+				for _, rsOwner := range rs.OwnerReferences {
+					if rsOwner.Kind == "Deployment" {
+						deployEvents, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+							FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Deployment", rsOwner.Name),
+						})
+						if err == nil {
+							allEvents = append(allEvents, deployEvents.Items...)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Also get recent general events that might be relevant (last 30 minutes)
+	thirtyMinutesAgo := time.Now().Add(-30 * time.Minute)
+	generalEvents, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, event := range generalEvents.Items {
+			// Include events that mention this pod or are recent warnings/errors
+			if event.FirstTimestamp.After(thirtyMinutesAgo) {
+				if strings.Contains(event.Message, podName) || 
+				   (event.Type == "Warning" && event.FirstTimestamp.After(time.Now().Add(-10*time.Minute))) {
+					allEvents = append(allEvents, event)
+				}
+			}
+		}
+	}
+
+	// Build comprehensive pod description matching kubectl describe output
+	describe := map[string]interface{}{
+		"name":      pod.Name,
+		"namespace": pod.Namespace,
+		"priority":  pod.Spec.Priority,
+		"node":      pod.Spec.NodeName,
+		"labels":    pod.Labels,
+		"annotations": pod.Annotations,
+		"status": map[string]interface{}{
+			"phase":              pod.Status.Phase,
+			"ip":                pod.Status.PodIP,
+			"ips":               pod.Status.PodIPs,
+			"host_ip":           pod.Status.HostIP,
+			"nominated_node":    pod.Status.NominatedNodeName,
+			"readiness_gates":   pod.Spec.ReadinessGates,
+		},
+		"controlled_by": []interface{}{},
+		"init_containers": []interface{}{},
+		"containers":      []interface{}{},
+		"conditions":      []interface{}{},
+		"volumes":         []interface{}{},
+		"qos_class":       pod.Status.QOSClass,
+		"node_selectors":  pod.Spec.NodeSelector,
+		"tolerations":     pod.Spec.Tolerations,
+		"events":          []interface{}{},
+	}
+
+	// Add creation timestamp and age
+	if !pod.CreationTimestamp.IsZero() {
+		describe["start_time"] = pod.CreationTimestamp.Time
+		describe["age"] = time.Since(pod.CreationTimestamp.Time).String()
+	}
+
+	// Add owner references (controlled by)
+	for _, owner := range pod.OwnerReferences {
+		controlledBy := map[string]interface{}{
+			"api_version": owner.APIVersion,
+			"kind":        owner.Kind,
+			"name":        owner.Name,
+			"uid":         owner.UID,
+			"controller":  *owner.Controller,
+		}
+		describe["controlled_by"] = append(describe["controlled_by"].([]interface{}), controlledBy)
+	}
+
+	// Add init containers
+	for _, container := range pod.Spec.InitContainers {
+		containerInfo := map[string]interface{}{
+			"name":    container.Name,
+			"image":   container.Image,
+			"ports":   container.Ports,
+			"env":     container.Env,
+			"mounts":  container.VolumeMounts,
+		}
+		
+		// Add resource limits and requests
+		if container.Resources.Limits != nil {
+			containerInfo["limits"] = container.Resources.Limits
+		}
+		if container.Resources.Requests != nil {
+			containerInfo["requests"] = container.Resources.Requests
+		}
+		
+		describe["init_containers"] = append(describe["init_containers"].([]interface{}), containerInfo)
+	}
+
+	// Add containers with detailed information
+	for _, container := range pod.Spec.Containers {
+		containerInfo := map[string]interface{}{
+			"name":            container.Name,
+			"image":           container.Image,
+			"image_pull_policy": container.ImagePullPolicy,
+			"ports":           container.Ports,
+			"host_network":    pod.Spec.HostNetwork,
+			"host_pid":        pod.Spec.HostPID,
+			"host_ipc":        pod.Spec.HostIPC,
+		}
+
+		// Add environment variables
+		if len(container.Env) > 0 {
+			envVars := []interface{}{}
+			for _, env := range container.Env {
+				envVar := map[string]interface{}{
+					"name":  env.Name,
+					"value": env.Value,
+				}
+				if env.ValueFrom != nil {
+					envVar["value_from"] = env.ValueFrom
+				}
+				envVars = append(envVars, envVar)
+			}
+			containerInfo["environment"] = envVars
+		}
+
+		// Add volume mounts
+		if len(container.VolumeMounts) > 0 {
+			mounts := []interface{}{}
+			for _, mount := range container.VolumeMounts {
+				mountInfo := map[string]interface{}{
+					"name":       mount.Name,
+					"mount_path": mount.MountPath,
+					"read_only":  mount.ReadOnly,
+				}
+				if mount.SubPath != "" {
+					mountInfo["sub_path"] = mount.SubPath
+				}
+				mounts = append(mounts, mountInfo)
+			}
+			containerInfo["mounts"] = mounts
+		}
+
+		// Add resource limits and requests
+		if container.Resources.Limits != nil {
+			containerInfo["limits"] = container.Resources.Limits
+		}
+		if container.Resources.Requests != nil {
+			containerInfo["requests"] = container.Resources.Requests
+		}
+
+		// Add liveness and readiness probes
+		if container.LivenessProbe != nil {
+			containerInfo["liveness_probe"] = container.LivenessProbe
+		}
+		if container.ReadinessProbe != nil {
+			containerInfo["readiness_probe"] = container.ReadinessProbe
+		}
+
+		describe["containers"] = append(describe["containers"].([]interface{}), containerInfo)
+	}
+
+	// Add container statuses
+	containerStatuses := []interface{}{}
+	for _, status := range pod.Status.ContainerStatuses {
+		statusInfo := map[string]interface{}{
+			"name":          status.Name,
+			"ready":         status.Ready,
+			"restart_count": status.RestartCount,
+			"image":         status.Image,
+			"image_id":      status.ImageID,
+			"container_id":  status.ContainerID,
+			"started":       status.Started,
+		}
+		
+		// Add detailed state information
+		if status.State.Running != nil {
+			statusInfo["state"] = map[string]interface{}{
+				"running": map[string]interface{}{
+					"started_at": status.State.Running.StartedAt,
+				},
+			}
+		} else if status.State.Waiting != nil {
+			statusInfo["state"] = map[string]interface{}{
+				"waiting": map[string]interface{}{
+					"reason":  status.State.Waiting.Reason,
+					"message": status.State.Waiting.Message,
+				},
+			}
+		} else if status.State.Terminated != nil {
+			statusInfo["state"] = map[string]interface{}{
+				"terminated": map[string]interface{}{
+					"exit_code":   status.State.Terminated.ExitCode,
+					"reason":      status.State.Terminated.Reason,
+					"message":     status.State.Terminated.Message,
+					"started_at":  status.State.Terminated.StartedAt,
+					"finished_at": status.State.Terminated.FinishedAt,
+					"signal":      status.State.Terminated.Signal,
+				},
+			}
+		}
+
+		// Add last state if available
+		if status.LastTerminationState.Terminated != nil {
+			statusInfo["last_state"] = map[string]interface{}{
+				"terminated": map[string]interface{}{
+					"exit_code":   status.LastTerminationState.Terminated.ExitCode,
+					"reason":      status.LastTerminationState.Terminated.Reason,
+					"message":     status.LastTerminationState.Terminated.Message,
+					"started_at":  status.LastTerminationState.Terminated.StartedAt,
+					"finished_at": status.LastTerminationState.Terminated.FinishedAt,
+				},
+			}
+		}
+
+		containerStatuses = append(containerStatuses, statusInfo)
+	}
+	describe["container_statuses"] = containerStatuses
+
+	// Add pod conditions
+	for _, condition := range pod.Status.Conditions {
+		conditionInfo := map[string]interface{}{
+			"type":               condition.Type,
+			"status":             condition.Status,
+			"last_probe_time":    condition.LastProbeTime,
+			"last_transition_time": condition.LastTransitionTime,
+			"reason":             condition.Reason,
+			"message":            condition.Message,
+		}
+		describe["conditions"] = append(describe["conditions"].([]interface{}), conditionInfo)
+	}
+
+	// Add volumes
+	for _, volume := range pod.Spec.Volumes {
+		volumeInfo := map[string]interface{}{
+			"name": volume.Name,
+			"type": "",
+		}
+
+		// Determine volume type and add specific details
+		if volume.EmptyDir != nil {
+			volumeInfo["type"] = "EmptyDir"
+			volumeInfo["empty_dir"] = volume.EmptyDir
+		} else if volume.HostPath != nil {
+			volumeInfo["type"] = "HostPath"
+			volumeInfo["host_path"] = volume.HostPath
+		} else if volume.PersistentVolumeClaim != nil {
+			volumeInfo["type"] = "PVC"
+			volumeInfo["claim_name"] = volume.PersistentVolumeClaim.ClaimName
+		} else if volume.ConfigMap != nil {
+			volumeInfo["type"] = "ConfigMap"
+			volumeInfo["config_map"] = volume.ConfigMap
+		} else if volume.Secret != nil {
+			volumeInfo["type"] = "Secret"
+			volumeInfo["secret"] = volume.Secret
+		} else if volume.DownwardAPI != nil {
+			volumeInfo["type"] = "DownwardAPI"
+			volumeInfo["downward_api"] = volume.DownwardAPI
+		} else if volume.Projected != nil {
+			volumeInfo["type"] = "Projected"
+			volumeInfo["projected"] = volume.Projected
+		}
+
+		describe["volumes"] = append(describe["volumes"].([]interface{}), volumeInfo)
+	}
+
+	// Deduplicate and sort events by timestamp
+	seenEvents := make(map[string]bool)
+	uniqueEvents := []corev1.Event{}
+	for _, event := range allEvents {
+		// Create a unique key for each event to avoid duplicates
+		key := fmt.Sprintf("%s:%s:%s:%s", event.Type, event.Reason, event.InvolvedObject.Name, event.FirstTimestamp.String())
+		if !seenEvents[key] {
+			seenEvents[key] = true
+			uniqueEvents = append(uniqueEvents, event)
+		}
+	}
+	
+	// Sort events by timestamp (oldest first)
+	for i := 0; i < len(uniqueEvents); i++ {
+		for j := i + 1; j < len(uniqueEvents); j++ {
+			if uniqueEvents[i].FirstTimestamp.After(uniqueEvents[j].FirstTimestamp.Time) {
+				uniqueEvents[i], uniqueEvents[j] = uniqueEvents[j], uniqueEvents[i]
+			}
+		}
+	}
+
+	// Format events for display
+	for _, event := range uniqueEvents {
+		eventInfo := map[string]interface{}{
+			"type":             event.Type,
+			"reason":           event.Reason,
+			"age":              time.Since(event.FirstTimestamp.Time).String(),
+			"from":             event.Source.Component,
+			"message":          event.Message,
+			"first_timestamp":  event.FirstTimestamp,
+			"last_timestamp":   event.LastTimestamp,
+			"count":            event.Count,
+			"object":           fmt.Sprintf("%s/%s", event.InvolvedObject.Kind, event.InvolvedObject.Name),
+		}
+		describe["events"] = append(describe["events"].([]interface{}), eventInfo)
+	}
+
+	return describe, nil
 }

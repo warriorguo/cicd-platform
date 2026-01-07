@@ -6,27 +6,19 @@ import {
   Alert, 
   Typography, 
   Space, 
-  Badge,
   Tag,
   Descriptions,
   message,
   Spin,
-  Row,
-  Col,
   Modal,
   Form,
   Input,
-  InputNumber,
-  Select,
-  Table
+  InputNumber
 } from 'antd';
 import { 
   ArrowLeftOutlined, 
   ReloadOutlined,
   PlayCircleOutlined,
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  ClockCircleOutlined,
   RollbackOutlined,
   BuildOutlined,
   PlusOutlined,
@@ -35,9 +27,10 @@ import {
 } from '@ant-design/icons';
 import { Link, useParams } from 'react-router-dom';
 import { appsAPI, createWebSocketConnection } from '../services/api';
+import { getStatusBadge } from '../utils/statusHelpers';
 
 const { Step } = Steps;
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const DeployDetails = () => {
   const { id } = useParams();
@@ -100,7 +93,7 @@ const DeployDetails = () => {
       const ws = createWebSocketConnection(id);
       
       ws.onopen = () => {
-        console.log('WebSocket connected for deployment');
+        // WebSocket connected
       };
 
       ws.onmessage = (event) => {
@@ -123,7 +116,7 @@ const DeployDetails = () => {
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
+        // WebSocket disconnected
       };
 
       setWsConnection(ws);
@@ -170,34 +163,10 @@ const DeployDetails = () => {
     }
   };
 
-  const getStatusBadge = (status) => {
-    const statusConfig = {
-      pending: { status: 'default', text: 'Pending', icon: <ClockCircleOutlined /> },
-      running: { status: 'processing', text: 'Running', icon: <PlayCircleOutlined /> },
-      deploying: { status: 'processing', text: 'Deploying', icon: <PlayCircleOutlined /> },
-      success: { status: 'success', text: 'Built', icon: <CheckCircleOutlined /> },
-      deployed: { status: 'success', text: 'Deployed', icon: <CheckCircleOutlined /> },
-      failed: { status: 'error', text: 'Failed', icon: <ExclamationCircleOutlined /> },
-      canceled: { status: 'default', text: 'Canceled', icon: <ExclamationCircleOutlined /> },
-    };
-    const config = statusConfig[status] || { status: 'default', text: status, icon: null };
-    return (
-      <Badge 
-        status={config.status} 
-        text={
-          <Space>
-            {config.icon}
-            {config.text}
-          </Space>
-        } 
-      />
-    );
-  };
 
   const getStepStatus = (stepName, releaseStatus) => {
     if (!release) return 'wait';
     
-    const stepOrder = ['build-complete', 'deploying', 'rollout', 'verify'];
     
     // Build is always complete if we're on this page
     if (stepName === 'build-complete') return 'finish';
@@ -254,7 +223,7 @@ const DeployDetails = () => {
               <Button type="text" icon={<ArrowLeftOutlined />} />
             </Link>
             Deployment Details - Release #{release.id}
-            {getStatusBadge(release.status)}
+            {getStatusBadge(release.status, true)}
           </Space>
         }
         extra={

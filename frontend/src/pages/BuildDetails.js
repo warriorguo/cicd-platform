@@ -6,7 +6,6 @@ import {
   Alert, 
   Typography, 
   Space, 
-  Badge,
   Tag,
   Descriptions,
   message,
@@ -19,17 +18,14 @@ import {
 import { 
   ArrowLeftOutlined, 
   ReloadOutlined,
-  PlayCircleOutlined,
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  ClockCircleOutlined,
-  EyeOutlined
+  PlayCircleOutlined
 } from '@ant-design/icons';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
+import { getStatusBadge } from '../utils/statusHelpers';
 
 const { Step } = Steps;
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 const { Panel } = Collapse;
 
 const BuildDetails = () => {
@@ -94,28 +90,6 @@ const BuildDetails = () => {
     }
   };
 
-  const getStatusBadge = (status) => {
-    const statusConfig = {
-      pending: { status: 'default', text: 'Pending', icon: <ClockCircleOutlined /> },
-      running: { status: 'processing', text: 'Running', icon: <PlayCircleOutlined /> },
-      completed: { status: 'success', text: 'Completed', icon: <CheckCircleOutlined /> },
-      success: { status: 'success', text: 'Success', icon: <CheckCircleOutlined /> },
-      failed: { status: 'error', text: 'Failed', icon: <ExclamationCircleOutlined /> },
-      canceled: { status: 'default', text: 'Canceled', icon: <ExclamationCircleOutlined /> },
-    };
-    const config = statusConfig[status] || { status: 'default', text: status, icon: null };
-    return (
-      <Badge 
-        status={config.status} 
-        text={
-          <Space>
-            {config.icon}
-            {config.text}
-          </Space>
-        } 
-      />
-    );
-  };
 
   const getStepStatus = (stageStatus) => {
     switch (stageStatus) {
@@ -155,7 +129,6 @@ const BuildDetails = () => {
     return <div style={{ padding: 24 }}>Release not found</div>;
   }
 
-  const isRunning = buildStatus?.overall_status === 'running' || buildStatus?.overall_status === 'pending';
   const canDeploy = buildStatus?.overall_status === 'success';
 
   return (
@@ -167,7 +140,7 @@ const BuildDetails = () => {
               <Button type="text" icon={<ArrowLeftOutlined />} />
             </Link>
             Build Details - Release #{release.id}
-            {buildStatus && getStatusBadge(buildStatus.overall_status)}
+            {buildStatus && getStatusBadge(buildStatus.overall_status, true)}
           </Space>
         }
         extra={
@@ -191,11 +164,6 @@ const BuildDetails = () => {
                 Deploy
               </Button>
             )}
-            <Link to={`/releases/${id}`}>
-              <Button icon={<EyeOutlined />}>
-                View Legacy
-              </Button>
-            </Link>
           </Space>
         }
       >
@@ -288,7 +256,7 @@ const BuildDetails = () => {
                     header={
                       <Space>
                         <span>{stage.stage_name}</span>
-                        {getStatusBadge(stage.status)}
+                        {getStatusBadge(stage.status, true)}
                         <Text type="secondary">({stageLogs.length} containers)</Text>
                       </Space>
                     } 
@@ -301,7 +269,7 @@ const BuildDetails = () => {
                         title={
                           <Space>
                             <code>{log.container_name}</code>
-                            {getStatusBadge(log.status)}
+                            {getStatusBadge(log.status, true)}
                           </Space>
                         }
                         style={{ marginBottom: 8 }}

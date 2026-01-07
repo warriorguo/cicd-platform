@@ -13,7 +13,8 @@ import {
   Badge,
   Form,
   Input,
-  InputNumber
+  InputNumber,
+  Tabs
 } from 'antd';
 import { 
   ArrowLeftOutlined, 
@@ -25,10 +26,14 @@ import {
   BuildOutlined,
   SettingOutlined,
   PlusOutlined,
-  DeleteOutlined
+  DeleteOutlined,
+  DownloadOutlined,
+  FileTextOutlined,
+  ConsoleSqlOutlined
 } from '@ant-design/icons';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
+import { getStatusBadge } from '../utils/statusHelpers';
 
 const { Option } = Select;
 
@@ -43,13 +48,32 @@ const AppDetails = () => {
   const [dockerfileValidation, setDockerfileValidation] = useState(null);
   const [loading, setLoading] = useState(false);
   const [releasesLoading, setReleasesLoading] = useState(false);
-  const [deploymentsLoading, setDeploymentsLoading] = useState(false);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [validating, setValidating] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [deployModalVisible, setDeployModalVisible] = useState(false);
   const [selectedReleaseId, setSelectedReleaseId] = useState(null);
   const [deployForm] = Form.useForm();
+  const [scaleModalVisible, setScaleModalVisible] = useState(false);
+  const [selectedDeployment, setSelectedDeployment] = useState(null);
+  const [scaleForm] = Form.useForm();
+  const [scaling, setScaling] = useState(false);
+  const [podLogsModalVisible, setPodLogsModalVisible] = useState(false);
+  const [selectedPod, setSelectedPod] = useState(null);
+  const [podLogs, setPodLogs] = useState('');
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [ttyWs, setTtyWs] = useState(null);
+  const [ttyOutput, setTtyOutput] = useState('');
+  const [ttyConnected, setTtyConnected] = useState(false);
+  const [activeTab, setActiveTab] = useState('logs');
+  const [podDescribe, setPodDescribe] = useState(null);
+  const [loadingDescribe, setLoadingDescribe] = useState(false);
+
+  // Helper function to clean ANSI escape sequences
+  const cleanAnsiEscapes = (text) => {
+    // Remove ANSI escape sequences like [6n, [?25h, etc.
+    return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\[[0-9]*n/g, '');
+  };
 
   useEffect(() => {
     if (id) {
@@ -89,14 +113,12 @@ const AppDetails = () => {
   };
 
   const fetchDeployments = async () => {
-    setDeploymentsLoading(true);
     try {
       const response = await appsAPI.getAppDeployments(id);
       setDeployments(response.data.deployments || []);
     } catch (error) {
       message.error('Failed to fetch deployments');
     } finally {
-      setDeploymentsLoading(false);
     }
   };
 
@@ -180,10 +202,152 @@ const AppDetails = () => {
   const showDeployModal = (releaseId) => {
     setSelectedReleaseId(releaseId);
     deployForm.setFieldsValue({
-      replicas: 1,
       env_vars: []
     });
     setDeployModalVisible(true);
+  };
+
+  const showScaleModal = (deployment) => {
+    setSelectedDeployment(deployment);
+    scaleForm.setFieldsValue({
+      replicas: deployment.replicas?.desired || 1
+    });
+    setScaleModalVisible(true);
+  };
+
+  const handleScaleModalOk = async () => {
+    try {
+      const values = await scaleForm.validateFields();
+      setScaling(true);
+      
+      await appsAPI.scaleDeployment(id, values);
+      message.success('Scaling initiated');
+      setScaleModalVisible(false);
+      // Refresh deployments after scaling
+      fetchDeployments();
+    } catch (error) {
+      if (error.errorFields) {
+        // Validation failed
+        return;
+      }
+      message.error('Failed to scale deployment');
+    } finally {
+      setScaling(false);
+    }
+  };
+
+  const showPodLogsModal = async (pod, deployment) => {
+    setSelectedPod({ ...pod, deployment });
+    setPodLogsModalVisible(true);
+    setActiveTab('logs');
+    setLoadingLogs(true);
+    
+    try {
+      const response = await appsAPI.getPodLogs(id, pod.name, deployment?.deployment_name);
+      setPodLogs(response.data.logs || 'No logs available');
+    } catch (error) {
+      setPodLogs(`Error loading logs: ${error.response?.data?.error || error.message}`);
+      message.error('Failed to load pod logs');
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const fetchPodDescribe = async () => {
+    if (!selectedPod) return;
+    
+    setLoadingDescribe(true);
+    try {
+      const response = await appsAPI.getPodDescribe(id, selectedPod.name);
+      setPodDescribe(response.data.describe);
+    } catch (error) {
+      setPodDescribe({ error: `Error loading pod describe: ${error.response?.data?.error || error.message}` });
+      message.error('Failed to load pod describe information');
+    } finally {
+      setLoadingDescribe(false);
+    }
+  };
+
+  const connectTTY = () => {
+    if (!selectedPod) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // For WebSocket connections, we need to directly connect to the backend port
+    const wsHost = `${window.location.hostname}:9091`;
+    const containerParam = selectedPod.deployment?.deployment_name ? 
+      `?container=${selectedPod.deployment.deployment_name}` : '';
+    
+    const wsUrl = `${protocol}//${wsHost}/api/apps/${id}/pods/${selectedPod.name}/tty${containerParam}`;
+    
+    try {
+      const ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        setTtyConnected(true);
+        setTtyOutput('Terminal connected. Type commands below.\r\n$ ');
+        message.success('Terminal connected');
+      };
+      
+      ws.onmessage = (event) => {
+        const cleanedData = cleanAnsiEscapes(event.data);
+        setTtyOutput(prev => prev + cleanedData);
+      };
+      
+      ws.onclose = () => {
+        setTtyConnected(false);
+        setTtyOutput(prev => prev + '\r\nTerminal disconnected.');
+        message.info('Terminal disconnected');
+      };
+      
+      ws.onerror = (error) => {
+        setTtyConnected(false);
+        setTtyOutput(prev => prev + '\r\nTerminal error: ' + error.message);
+        message.error('Terminal connection failed');
+      };
+      
+      setTtyWs(ws);
+    } catch (error) {
+      message.error('Failed to connect to terminal');
+    }
+  };
+
+  const disconnectTTY = () => {
+    if (ttyWs) {
+      ttyWs.close();
+      setTtyWs(null);
+    }
+  };
+
+  const sendTTYCommand = (command) => {
+    if (ttyWs && ttyConnected) {
+      ttyWs.send(command);
+    }
+  };
+
+  const handleTTYKeyPress = (event) => {
+    if (event.key === 'Enter') {
+      const command = event.target.value + '\r\n';
+      sendTTYCommand(command);
+      event.target.value = '';
+    }
+  };
+
+  const downloadPodLogs = () => {
+    if (!selectedPod) return;
+    
+    const downloadUrl = appsAPI.downloadPodLogs(
+      id, 
+      selectedPod.name, 
+      selectedPod.deployment?.deployment_name
+    );
+    
+    // Create a temporary link and trigger download
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = `${selectedPod.name}-logs.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleDeployModalOk = async () => {
@@ -209,70 +373,20 @@ const AppDetails = () => {
     }
   };
 
-  const getStatusBadge = (status) => {
-    const statusConfig = {
-      pending: { status: 'default', text: 'Pending' },
-      running: { status: 'processing', text: 'Running' },
-      success: { status: 'success', text: 'Success' },
-      failed: { status: 'error', text: 'Failed' },
-      canceled: { status: 'default', text: 'Canceled' },
-    };
-    const config = statusConfig[status] || { status: 'default', text: status };
-    return <Badge status={config.status} text={config.text} />;
-  };
 
-  const deploymentColumns = [
-    {
-      title: 'Release',
-      dataIndex: 'release_id',
-      key: 'release_id',
-      width: 80,
-      render: (text) => `#${text}`,
-    },
-    {
-      title: 'Image Tag',
-      dataIndex: 'image_tag',
-      key: 'image_tag',
-      render: (text) => text ? <code>{text}</code> : '-',
-    },
-    {
-      title: 'Commit SHA',
-      dataIndex: 'commit_sha',
-      key: 'commit_sha',
-      render: (text) => text ? <code>{text.substring(0, 8)}</code> : '-',
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (text) => getStatusBadge(text),
-    },
-    {
-      title: 'Replicas',
-      dataIndex: 'replicas',
-      key: 'replicas',
-      render: (replicas) => replicas ? `${replicas.ready}/${replicas.desired}` : '0/1',
-    },
-    {
-      title: 'Deployed At',
-      dataIndex: 'deployed_at',
-      key: 'deployed_at',
-      render: (text) => text ? new Date(text).toLocaleString() : '-',
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Space size="middle">
-          <Link to={`/releases/${record.release_id}/deploy`}>
-            <Button type="link" icon={<EyeOutlined />} size="small">
-              View
-            </Button>
-          </Link>
-        </Space>
-      ),
-    },
-  ];
+  const getPodStatusColor = (status) => {
+    switch (status.toLowerCase()) {
+      case 'running':
+        return '#52c41a'; // green
+      case 'pending':
+        return '#faad14'; // yellow
+      case 'failed':
+      case 'error':
+        return '#ff4d4f'; // red
+      default:
+        return '#d9d9d9'; // gray
+    }
+  };
 
   const releasesColumns = [
     {
@@ -336,7 +450,7 @@ const AppDetails = () => {
                   size="small"
                   onClick={() => showDeployModal(record.id)}
                 >
-                  Deploy
+                  Upgrade
                 </Button>
                 <Link to={`/releases/${record.id}/build`}>
                   <Button type="link" icon={<EyeOutlined />} size="small">
@@ -366,11 +480,11 @@ const AppDetails = () => {
   ];
 
   if (loading || !app) {
-    return <div style={{ padding: 24 }}>Loading...</div>;
+    return <div>Loading...</div>;
   }
 
   return (
-    <div style={{ padding: 24 }}>
+    <div>
       <Card
         title={
           <Space>
@@ -506,14 +620,161 @@ const AppDetails = () => {
               No deployments found. Deploy a successful build to see pods here.
             </div>
           ) : (
-            <Table
-              columns={deploymentColumns}
-              dataSource={deployments}
-              loading={deploymentsLoading}
-              rowKey="release_id"
-              pagination={false}
-              size="small"
-            />
+            deployments.map((deployment) => (
+              <div key={deployment.release_id} style={{ marginBottom: 16 }}>
+                {/* Top Section - Deployment Info */}
+                <div style={{ 
+                  padding: '16px', 
+                  background: '#fafafa', 
+                  border: '1px solid #d9d9d9',
+                  borderRadius: '6px',
+                  marginBottom: '12px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '24px' }}>
+                      <div>
+                        <strong>Commit SHA:</strong> 
+                        <code style={{ marginLeft: '8px' }}>
+                          {deployment.commit_sha ? deployment.commit_sha.substring(0, 8) : '-'}
+                        </code>
+                      </div>
+                      <div>
+                        <strong>Status:</strong> 
+                        <span style={{ marginLeft: '8px' }}>{getStatusBadge(deployment.status)}</span>
+                      </div>
+                      <div>
+                        <strong>Replicas:</strong> 
+                        <span style={{ marginLeft: '8px' }}>
+                          {deployment.replicas ? `${deployment.replicas.ready}/${deployment.replicas.desired}` : '0/1'}
+                        </span>
+                      </div>
+                      <div>
+                        <strong>Deployed:</strong> 
+                        <span style={{ marginLeft: '8px' }}>
+                          {deployment.deployed_at ? new Date(deployment.deployed_at).toLocaleString() : '-'}
+                        </span>
+                      </div>
+                    </div>
+                    <Space size="middle">
+                      <Button 
+                        type="primary" 
+                        icon={<SettingOutlined />} 
+                        size="small"
+                        onClick={() => showScaleModal(deployment)}
+                      >
+                        Scale
+                      </Button>
+                      <Link to={`/releases/${deployment.release_id}/deploy`}>
+                        <Button type="default" icon={<EyeOutlined />} size="small">
+                          View
+                        </Button>
+                      </Link>
+                    </Space>
+                  </div>
+                </div>
+
+                {/* Bottom Section - Pod Grid */}
+                {deployment.pods && deployment.pods.length > 0 && (
+                  <div style={{
+                    padding: '16px',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: '6px',
+                    background: '#ffffff'
+                  }}>
+                    {/* Group pods by image tag to identify rolling update status */}
+                    {(() => {
+                      const podsByVersion = deployment.pods.reduce((acc, pod) => {
+                        const version = pod.image_tag || 'unknown';
+                        if (!acc[version]) acc[version] = [];
+                        acc[version].push(pod);
+                        return acc;
+                      }, {});
+                      
+                      const versions = Object.keys(podsByVersion);
+                      const isRollingUpdate = versions.length > 1;
+                      
+                      return (
+                        <>
+                          <div style={{ marginBottom: '8px', fontWeight: 'bold', fontSize: '13px' }}>
+                            Pods ({deployment.pods.length})
+                            {isRollingUpdate && (
+                              <Tag color="orange" size="small" style={{ marginLeft: '8px' }}>
+                                Rolling Update
+                              </Tag>
+                            )}
+                          </div>
+                          
+                          {versions.map((version, versionIndex) => (
+                            <div key={version} style={{ marginBottom: isRollingUpdate ? '12px' : '0px' }}>
+                              {isRollingUpdate && (
+                                <div style={{ 
+                                  marginBottom: '6px', 
+                                  fontSize: '11px', 
+                                  color: '#666',
+                                  fontWeight: 'bold'
+                                }}>
+                                  {versionIndex === 0 ? '🆕 New Version' : '🔄 Old Version'} ({version})
+                                </div>
+                              )}
+                              
+                              <div style={{ 
+                                display: 'grid', 
+                                gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', 
+                                gap: '8px',
+                                maxHeight: '200px',
+                                overflowY: 'auto'
+                              }}>
+                                {podsByVersion[version].map((pod, index) => (
+                                  <div
+                                    key={pod.name || index}
+                                    style={{
+                                      width: '100%',
+                                      height: '40px',
+                                      backgroundColor: getPodStatusColor(pod.status),
+                                      border: isRollingUpdate && versionIndex > 0 
+                                        ? `2px dashed ${getPodStatusColor(pod.status)}` 
+                                        : `2px solid ${getPodStatusColor(pod.status)}`,
+                                      borderRadius: '4px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: '#fff',
+                                      fontSize: '11px',
+                                      fontWeight: 'bold',
+                                      textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                                      cursor: 'pointer',
+                                      transition: 'all 0.2s ease',
+                                      opacity: isRollingUpdate && versionIndex > 0 ? 0.7 : 1
+                                    }}
+                                    title={`Pod: ${pod.name}\nStatus: ${pod.status}\nNode: ${pod.node || 'unknown'}\nRestart Count: ${pod.restart_count || 0}\nImage: ${pod.image || 'unknown'}\nReplicaSet: ${pod.replica_set || 'unknown'}\nClick to view logs`}
+                                    onClick={() => showPodLogsModal(pod, deployment)}
+                                    onMouseOver={(e) => {
+                                      e.target.style.transform = 'scale(1.05)';
+                                      e.target.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+                                    }}
+                                    onMouseOut={(e) => {
+                                      e.target.style.transform = 'scale(1)';
+                                      e.target.style.boxShadow = 'none';
+                                    }}
+                                  >
+                                    {pod.status.charAt(0).toUpperCase()}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                          <div style={{ marginTop: '8px', fontSize: '11px', color: '#666' }}>
+                            <span style={{ color: '#52c41a', fontWeight: 'bold' }}>■ Running</span>
+                            <span style={{ margin: '0 8px', color: '#faad14', fontWeight: 'bold' }}>■ Pending</span>
+                            <span style={{ color: '#ff4d4f', fontWeight: 'bold' }}>■ Failed</span>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            ))
           )}
         </Card>
 
@@ -537,19 +798,19 @@ const AppDetails = () => {
         </Card>
       </Card>
 
-      {/* Deploy Configuration Modal */}
+      {/* Upgrade Configuration Modal */}
       <Modal
         title={
           <Space>
-            <SettingOutlined />
-            Deploy Configuration - Release #{selectedReleaseId}
+            <PlayCircleOutlined />
+            Upgrade Configuration - Release #{selectedReleaseId}
           </Space>
         }
         visible={deployModalVisible}
         onOk={handleDeployModalOk}
         onCancel={() => setDeployModalVisible(false)}
         width={600}
-        okText="Deploy"
+        okText="Upgrade"
         cancelText="Cancel"
         confirmLoading={deploying}
       >
@@ -557,17 +818,24 @@ const AppDetails = () => {
           form={deployForm}
           layout="vertical"
           initialValues={{
-            replicas: 1,
+            maxUnavailable: 25,
             env_vars: []
           }}
         >
           <Form.Item
-            label="Replicas"
-            name="replicas"
-            rules={[{ required: true, message: 'Please enter number of replicas' }]}
-            help="Number of pod replicas to run"
+            label="Rolling Update Strategy"
+            name="maxUnavailable"
+            rules={[{ required: true, message: 'Please enter rolling update percentage' }]}
+            help="Maximum percentage of pods that can be unavailable during the update (default: 25%)"
           >
-            <InputNumber min={1} max={100} style={{ width: '100%' }} />
+            <InputNumber 
+              min={1} 
+              max={100} 
+              style={{ width: '100%' }} 
+              formatter={value => `${value}%`}
+              parser={value => value.replace('%', '')}
+              placeholder="25"
+            />
           </Form.Item>
 
           <Form.Item
@@ -630,6 +898,579 @@ const AppDetails = () => {
             </Form.List>
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* Scale Configuration Modal */}
+      <Modal
+        title={
+          <Space>
+            <SettingOutlined />
+            Scale Deployment - {selectedDeployment?.deployment_name}
+          </Space>
+        }
+        visible={scaleModalVisible}
+        onOk={handleScaleModalOk}
+        onCancel={() => setScaleModalVisible(false)}
+        width={400}
+        okText="Scale"
+        cancelText="Cancel"
+        confirmLoading={scaling}
+      >
+        <Form
+          form={scaleForm}
+          layout="vertical"
+          initialValues={{
+            replicas: 1
+          }}
+        >
+          <Form.Item
+            label="Number of Replicas"
+            name="replicas"
+            rules={[{ required: true, message: 'Please enter number of replicas' }]}
+            help="Set the number of pod replicas to run"
+          >
+            <InputNumber 
+              min={0} 
+              max={100} 
+              style={{ width: '100%' }} 
+              placeholder="Enter desired replica count"
+            />
+          </Form.Item>
+          
+          {selectedDeployment && (
+            <Alert
+              message="Current Deployment Status"
+              description={
+                <div>
+                  <div>Release: #{selectedDeployment.release_id}</div>
+                  <div>Image: <code>{selectedDeployment.image_tag}</code></div>
+                  <div>Current Replicas: {selectedDeployment.replicas?.ready || 0}/{selectedDeployment.replicas?.desired || 1}</div>
+                </div>
+              }
+              type="info"
+              showIcon
+              style={{ marginTop: 16 }}
+            />
+          )}
+        </Form>
+      </Modal>
+
+      {/* Pod Logs Modal */}
+      <Modal
+        title={
+          <Space>
+            <FileTextOutlined />
+            Pod Details - {selectedPod?.name}
+          </Space>
+        }
+        visible={podLogsModalVisible}
+        onOk={() => {
+          disconnectTTY();
+          setPodLogsModalVisible(false);
+          setPodDescribe(null); // Reset pod describe data
+          setActiveTab('logs'); // Reset to default tab
+        }}
+        onCancel={() => {
+          disconnectTTY();
+          setPodLogsModalVisible(false);
+          setPodDescribe(null); // Reset pod describe data
+          setActiveTab('logs'); // Reset to default tab
+        }}
+        width={1000}
+        okText="Close"
+        cancelButtonProps={{ style: { display: 'none' } }}
+        footer={[
+          activeTab === 'logs' && (
+            <Button 
+              key="download" 
+              icon={<DownloadOutlined />}
+              onClick={downloadPodLogs}
+              disabled={loadingLogs || !podLogs || podLogs.startsWith('Error')}
+            >
+              Download Logs
+            </Button>
+          ),
+          activeTab === 'terminal' && (
+            <Button 
+              key="connect" 
+              type={ttyConnected ? 'danger' : 'primary'}
+              icon={<ConsoleSqlOutlined />}
+              onClick={ttyConnected ? disconnectTTY : connectTTY}
+            >
+              {ttyConnected ? 'Disconnect' : 'Connect Terminal'}
+            </Button>
+          ),
+          <Button key="close" onClick={() => {
+            disconnectTTY();
+            setPodLogsModalVisible(false);
+            setPodDescribe(null); // Reset pod describe data
+            setActiveTab('logs'); // Reset to default tab
+          }}>
+            Close
+          </Button>
+        ].filter(Boolean)}
+      >
+        {selectedPod && (
+          <div style={{ marginBottom: 16 }}>
+            <Alert
+              message="Pod Information"
+              description={
+                <div>
+                  <div><strong>Pod Name:</strong> <code>{selectedPod.name}</code></div>
+                  <div><strong>Status:</strong> <Badge status={selectedPod.status === 'Running' ? 'success' : selectedPod.status === 'Pending' ? 'processing' : 'error'} text={selectedPod.status} /></div>
+                  <div><strong>Node:</strong> {selectedPod.node || 'unknown'}</div>
+                  <div><strong>Restart Count:</strong> {selectedPod.restart_count || 0}</div>
+                  {selectedPod.started_at && <div><strong>Started:</strong> {new Date(selectedPod.started_at).toLocaleString()}</div>}
+                </div>
+              }
+              type="info"
+              showIcon
+            />
+          </div>
+        )}
+
+        <Tabs 
+          activeKey={activeTab} 
+          onChange={(key) => {
+            setActiveTab(key);
+            if (key === 'describe' && selectedPod) {
+              fetchPodDescribe();
+            }
+          }}
+          items={[
+            {
+              key: 'logs',
+              label: (
+                <span>
+                  <FileTextOutlined />
+                  Logs
+                </span>
+              ),
+              children: (
+                <div style={{ height: '500px', border: '1px solid #d9d9d9', borderRadius: '4px' }}>
+                  {loadingLogs ? (
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      height: '100%',
+                      background: '#fafafa' 
+                    }}>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ marginBottom: 8 }}>Loading logs...</div>
+                        <div>Please wait...</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        height: '100%',
+                        padding: '12px',
+                        backgroundColor: '#1e1e1e',
+                        color: '#ffffff',
+                        fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                        fontSize: '12px',
+                        lineHeight: '1.4',
+                        overflow: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all'
+                      }}
+                    >
+                      {podLogs || 'No logs available'}
+                    </div>
+                  )}
+                </div>
+              )
+            },
+            {
+              key: 'terminal',
+              label: (
+                <span>
+                  <ConsoleSqlOutlined />
+                  Terminal
+                </span>
+              ),
+              children: (
+                <div style={{ height: '500px' }}>
+                  <div style={{ 
+                    height: '460px', 
+                    border: '1px solid #d9d9d9', 
+                    borderRadius: '4px 4px 0 0',
+                    backgroundColor: '#1e1e1e',
+                    color: '#00ff00',
+                    fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                    fontSize: '12px',
+                    padding: '8px',
+                    overflow: 'auto',
+                    whiteSpace: 'pre-wrap'
+                  }}>
+                    {ttyOutput || (ttyConnected ? 'Terminal ready...' : 'Click "Connect Terminal" to start a terminal session')}
+                  </div>
+                  <Input 
+                    placeholder="Type command and press Enter..."
+                    onKeyPress={handleTTYKeyPress}
+                    disabled={!ttyConnected}
+                    style={{ 
+                      borderRadius: '0 0 4px 4px',
+                      fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace'
+                    }}
+                  />
+                </div>
+              )
+            },
+            {
+              key: 'describe',
+              label: (
+                <span>
+                  <EyeOutlined />
+                  Describe
+                </span>
+              ),
+              children: (
+                <div style={{ height: '500px', border: '1px solid #d9d9d9', borderRadius: '4px', overflow: 'auto' }}>
+                  {loadingDescribe ? (
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      height: '100%',
+                      background: '#fafafa' 
+                    }}>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ marginBottom: 8 }}>Loading pod details...</div>
+                        <div>Please wait...</div>
+                      </div>
+                    </div>
+                  ) : podDescribe?.error ? (
+                    <div style={{ 
+                      padding: '16px', 
+                      color: '#ff4d4f',
+                      fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                      fontSize: '12px'
+                    }}>
+                      {podDescribe.error}
+                    </div>
+                  ) : podDescribe ? (
+                    <div style={{ 
+                      padding: '16px', 
+                      fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                      fontSize: '12px',
+                      lineHeight: '1.4'
+                    }}>
+                      {/* Basic Information */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div><strong>Name:</strong> {podDescribe.name}</div>
+                        <div><strong>Namespace:</strong> {podDescribe.namespace}</div>
+                        <div><strong>Priority:</strong> {podDescribe.priority || '0'}</div>
+                        <div><strong>Node:</strong> {podDescribe.node || '<none>'}</div>
+                        <div><strong>Start Time:</strong> {podDescribe.start_time ? new Date(podDescribe.start_time).toLocaleString() : '<unknown>'}</div>
+                        <div><strong>Labels:</strong></div>
+                        {podDescribe.labels && Object.keys(podDescribe.labels).length > 0 ? (
+                          <div style={{ marginLeft: 20 }}>
+                            {Object.entries(podDescribe.labels).map(([key, value]) => (
+                              <div key={key}>{key}={value}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginLeft: 20 }}>{'<none>'}</div>
+                        )}
+                        <div><strong>Annotations:</strong></div>
+                        {podDescribe.annotations && Object.keys(podDescribe.annotations).length > 0 ? (
+                          <div style={{ marginLeft: 20 }}>
+                            {Object.entries(podDescribe.annotations).map(([key, value]) => (
+                              <div key={key} style={{ wordBreak: 'break-all' }}>{key}: {value}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginLeft: 20 }}>{'<none>'}</div>
+                        )}
+                      </div>
+
+                      {/* Status */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div><strong>Status:</strong> {podDescribe.status?.phase || 'Unknown'}</div>
+                        <div><strong>IP:</strong> {podDescribe.status?.ip || '<none>'}</div>
+                        {podDescribe.status?.ips && podDescribe.status.ips.length > 0 && (
+                          <div><strong>IPs:</strong></div>
+                        )}
+                        {podDescribe.status?.ips?.map((ip, index) => (
+                          <div key={index} style={{ marginLeft: 20 }}>
+                            IP: {ip.ip}
+                          </div>
+                        ))}
+                        <div><strong>Controlled By:</strong></div>
+                        {podDescribe.controlled_by && podDescribe.controlled_by.length > 0 ? (
+                          podDescribe.controlled_by.map((owner, index) => (
+                            <div key={index} style={{ marginLeft: 20 }}>
+                              {owner.kind}/{owner.name}
+                            </div>
+                          ))
+                        ) : (
+                          <div style={{ marginLeft: 20 }}>{'<none>'}</div>
+                        )}
+                      </div>
+
+                      {/* Init Containers */}
+                      {podDescribe.init_containers && podDescribe.init_containers.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div><strong>Init Containers:</strong></div>
+                          {podDescribe.init_containers.map((container, index) => (
+                            <div key={index} style={{ marginLeft: 20, marginBottom: 8 }}>
+                              <div>{container.name}:</div>
+                              <div style={{ marginLeft: 20 }}>
+                                <div>Image: {container.image}</div>
+                                {container.ports && container.ports.length > 0 && (
+                                  <div>Ports: {container.ports.map(p => `${p.containerPort}/${p.protocol || 'TCP'}`).join(', ')}</div>
+                                )}
+                                {container.requests && (
+                                  <div>Requests: {Object.entries(container.requests).map(([k, v]) => `${k}: ${v}`).join(', ')}</div>
+                                )}
+                                {container.limits && (
+                                  <div>Limits: {Object.entries(container.limits).map(([k, v]) => `${k}: ${v}`).join(', ')}</div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Containers */}
+                      {podDescribe.containers && podDescribe.containers.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div><strong>Containers:</strong></div>
+                          {podDescribe.containers.map((container, index) => (
+                            <div key={index} style={{ marginLeft: 20, marginBottom: 12 }}>
+                              <div>{container.name}:</div>
+                              <div style={{ marginLeft: 20 }}>
+                                <div>Image: {container.image}</div>
+                                <div>Image ID: {podDescribe.container_statuses?.[index]?.image_id || '<unknown>'}</div>
+                                {container.ports && container.ports.length > 0 && (
+                                  <div>Ports: {container.ports.map(p => `${p.containerPort}/${p.protocol || 'TCP'}`).join(', ')}</div>
+                                )}
+                                <div>Host Network: {container.host_network ? 'true' : 'false'}</div>
+                                {container.requests && (
+                                  <div>Requests: {Object.entries(container.requests).map(([k, v]) => `${k}: ${v}`).join(', ')}</div>
+                                )}
+                                {container.limits && (
+                                  <div>Limits: {Object.entries(container.limits).map(([k, v]) => `${k}: ${v}`).join(', ')}</div>
+                                )}
+                                
+                                {/* Container Status */}
+                                {podDescribe.container_statuses?.[index] && (
+                                  <>
+                                    <div>State: </div>
+                                    <div style={{ marginLeft: 20 }}>
+                                      {podDescribe.container_statuses[index].state?.running && (
+                                        <div>Running</div>
+                                      )}
+                                      {podDescribe.container_statuses[index].state?.waiting && (
+                                        <div>
+                                          Waiting
+                                          <div style={{ marginLeft: 20 }}>
+                                            Reason: {podDescribe.container_statuses[index].state.waiting.reason}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {podDescribe.container_statuses[index].state?.terminated && (
+                                        <div>
+                                          Terminated
+                                          <div style={{ marginLeft: 20 }}>
+                                            Reason: {podDescribe.container_statuses[index].state.terminated.reason}<br/>
+                                            Exit Code: {podDescribe.container_statuses[index].state.terminated.exit_code}<br/>
+                                            Started: {podDescribe.container_statuses[index].state.terminated.started_at ? 
+                                              new Date(podDescribe.container_statuses[index].state.terminated.started_at).toLocaleString() : '<unknown>'}<br/>
+                                            Finished: {podDescribe.container_statuses[index].state.terminated.finished_at ? 
+                                              new Date(podDescribe.container_statuses[index].state.terminated.finished_at).toLocaleString() : '<unknown>'}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>Ready: {podDescribe.container_statuses[index].ready ? 'True' : 'False'}</div>
+                                    <div>Restart Count: {podDescribe.container_statuses[index].restart_count || 0}</div>
+                                  </>
+                                )}
+
+                                {/* Environment Variables */}
+                                {container.environment && container.environment.length > 0 && (
+                                  <>
+                                    <div>Environment:</div>
+                                    <div style={{ marginLeft: 20 }}>
+                                      {container.environment.map((env, envIndex) => (
+                                        <div key={envIndex}>
+                                          {env.name}: {env.value || (env.value_from ? '<set from secret/configmap>' : '<undefined>')}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+
+                                {/* Mounts */}
+                                {container.mounts && container.mounts.length > 0 && (
+                                  <>
+                                    <div>Mounts:</div>
+                                    <div style={{ marginLeft: 20 }}>
+                                      {container.mounts.map((mount, mountIndex) => (
+                                        <div key={mountIndex}>
+                                          {mount.mount_path} from {mount.name} ({mount.read_only ? 'ro' : 'rw'})
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Conditions */}
+                      {podDescribe.conditions && podDescribe.conditions.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div><strong>Conditions:</strong></div>
+                          <div style={{ marginLeft: 20 }}>
+                            <div>Type    Status  LastProbeTime    LastTransitionTime    Reason</div>
+                            <div>----    ------  -------------    ------------------    ------</div>
+                            {podDescribe.conditions.map((condition, index) => (
+                              <div key={index}>
+                                {condition.type}    {condition.status}    {condition.last_probe_time || '<unknown>'}    {condition.last_transition_time ? new Date(condition.last_transition_time).toLocaleString() : '<unknown>'}    {condition.reason || ''}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Volumes */}
+                      {podDescribe.volumes && podDescribe.volumes.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div><strong>Volumes:</strong></div>
+                          {podDescribe.volumes.map((volume, index) => (
+                            <div key={index} style={{ marginLeft: 20, marginBottom: 4 }}>
+                              <div>{volume.name}:</div>
+                              <div style={{ marginLeft: 20 }}>
+                                <div>Type: {volume.type}</div>
+                                {volume.type === 'PVC' && (
+                                  <div>ClaimName: {volume.claim_name}</div>
+                                )}
+                                {volume.type === 'HostPath' && volume.host_path && (
+                                  <>
+                                    <div>Path: {volume.host_path.path}</div>
+                                    <div>HostPathType: {volume.host_path.type || 'File'}</div>
+                                  </>
+                                )}
+                                {volume.type === 'Secret' && volume.secret && (
+                                  <div>SecretName: {volume.secret.secretName}</div>
+                                )}
+                                {volume.type === 'ConfigMap' && volume.config_map && (
+                                  <div>Name: {volume.config_map.name}</div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* QoS Class */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div><strong>QoS Class:</strong> {podDescribe.qos_class || 'BestEffort'}</div>
+                      </div>
+
+                      {/* Node-Selectors */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div><strong>Node-Selectors:</strong></div>
+                        {podDescribe.node_selectors && Object.keys(podDescribe.node_selectors).length > 0 ? (
+                          <div style={{ marginLeft: 20 }}>
+                            {Object.entries(podDescribe.node_selectors).map(([key, value]) => (
+                              <div key={key}>{key}={value}</div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginLeft: 20 }}>{'<none>'}</div>
+                        )}
+                      </div>
+
+                      {/* Tolerations */}
+                      <div style={{ marginBottom: 16 }}>
+                        <div><strong>Tolerations:</strong></div>
+                        {podDescribe.tolerations && podDescribe.tolerations.length > 0 ? (
+                          <div style={{ marginLeft: 20 }}>
+                            {podDescribe.tolerations.map((toleration, index) => (
+                              <div key={index}>
+                                {toleration.key || '<none>'}:{toleration.effect || 'NoSchedule'} for {toleration.tolerationSeconds || 'infinite'}s
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginLeft: 20 }}>{'<none>'}</div>
+                        )}
+                      </div>
+
+                      {/* Events */}
+                      {podDescribe.events && podDescribe.events.length > 0 ? (
+                        <div>
+                          <div><strong>Events:</strong></div>
+                          <div style={{ marginLeft: 20, fontFamily: 'monospace' }}>
+                            <div style={{ borderBottom: '1px solid #ddd', paddingBottom: 4, marginBottom: 4 }}>
+                              <span style={{ display: 'inline-block', width: '80px' }}>Type</span>
+                              <span style={{ display: 'inline-block', width: '120px' }}>Reason</span>
+                              <span style={{ display: 'inline-block', width: '80px' }}>Age</span>
+                              <span style={{ display: 'inline-block', width: '100px' }}>From</span>
+                              <span style={{ display: 'inline-block', width: '120px' }}>Object</span>
+                              <span>Message</span>
+                            </div>
+                            {podDescribe.events.map((event, index) => (
+                              <div key={index} style={{ marginBottom: 2, fontSize: '11px' }}>
+                                <span style={{ 
+                                  display: 'inline-block', 
+                                  width: '80px',
+                                  color: event.type === 'Warning' ? '#ff4d4f' : '#52c41a'
+                                }}>
+                                  {event.type}
+                                </span>
+                                <span style={{ display: 'inline-block', width: '120px' }}>
+                                  {event.reason}
+                                </span>
+                                <span style={{ display: 'inline-block', width: '80px' }}>
+                                  {event.age}
+                                </span>
+                                <span style={{ display: 'inline-block', width: '100px' }}>
+                                  {event.from}
+                                </span>
+                                <span style={{ display: 'inline-block', width: '120px' }}>
+                                  {event.object}
+                                </span>
+                                <span style={{ color: '#666' }}>
+                                  {event.message}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div><strong>Events:</strong></div>
+                          <div style={{ marginLeft: 20, color: '#999', fontStyle: 'italic' }}>
+                            No events found for this pod
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      height: '100%',
+                      color: '#999',
+                      background: '#fafafa'
+                    }}>
+                      No pod description available
+                    </div>
+                  )}
+                </div>
+              )
+            }
+          ]}
+        />
       </Modal>
     </div>
   );

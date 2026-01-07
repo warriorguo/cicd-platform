@@ -31,6 +31,7 @@ type DeployPipelineRunRequest struct {
 	TargetDeployName string
 	Replicas         int
 	EnvVars          models.EnvVars
+	MaxUnavailable   int
 }
 
 /*
