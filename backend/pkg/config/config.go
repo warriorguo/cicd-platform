@@ -53,6 +53,7 @@ func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
+	viper.AddConfigPath("..")  // Parent directory for when running from backend/
 	viper.AddConfigPath("/etc/cicd/")
 
 	viper.SetDefault("server.host", "0.0.0.0")

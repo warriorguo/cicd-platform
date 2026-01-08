@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -1346,25 +1347,32 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 		}
 	}
 
-	// Get all releases for this app to delete Harbor images
+	// Get all releases for this app to delete Harbor images BEFORE soft-deleting them
 	var releases []models.Release
 	if err := h.db.Where("app_id = ?", appID).Find(&releases).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to fetch releases"})
 		return
 	}
 
-	// Delete Harbor images
+	// Delete Harbor images BEFORE deleting the releases records
+	log.Printf("Harbor configuration: Enabled=%v, Endpoint=%s", h.config.Harbor.Enabled, h.config.Harbor.Endpoint)
+	log.Printf("Found %d releases for deletion", len(releases))
 	if h.config.Harbor.Enabled {
+		log.Printf("Harbor is enabled, processing image deletions...")
 		for _, release := range releases {
+			log.Printf("Processing release ID=%d, ImageTag=%s", release.ID, release.ImageTag)
 			if release.ImageTag != "" {
 				// Extract repository and tag from image tag
 				// Format: registry/library/app-name:tag
+				log.Printf("Calling deleteHarborImage for app %s, imageTag %s", app.Name, release.ImageTag)
 				if err := h.deleteHarborImage(&app, release.ImageTag); err != nil {
 					// Log error but continue with deletion
-					fmt.Printf("Failed to delete Harbor image %s: %v\n", release.ImageTag, err)
+					log.Printf("Failed to delete Harbor image %s: %v", release.ImageTag, err)
 				}
 			}
 		}
+	} else {
+		log.Printf("Harbor is disabled, skipping image deletion")
 	}
 
 	// Delete build logs
@@ -1374,7 +1382,7 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 		return
 	}
 
-	// Delete releases
+	// Delete releases (soft delete)
 	if err := h.db.Where("app_id = ?", appID).Delete(&models.Release{}).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to delete releases"})
 		return
@@ -1392,13 +1400,14 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 // deleteHarborImage deletes an image repository from Harbor
 func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
 	// Extract repository name from app's registry repo
-	// Format: registry/project/repository
+	// Format: registry/project/repository or registry/project/repository/sub-repo
 	repository := ""
 	if app.RegistryRepo != "" {
 		// Extract repository name from registry_repo field
 		parts := strings.Split(app.RegistryRepo, "/")
 		if len(parts) >= 3 {
-			repository = parts[len(parts)-1] // Get the last part as repository name
+			// Join all parts after the project name to handle multi-level repositories
+			repository = strings.Join(parts[2:], "/") // Skip registry and project parts
 		} else {
 			return fmt.Errorf("invalid registry_repo format: %s", app.RegistryRepo)
 		}
@@ -1414,7 +1423,8 @@ func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
 		if len(pathParts) < 3 {
 			return fmt.Errorf("invalid repository path: %s", repoPath)
 		}
-		repository = pathParts[len(pathParts)-1]
+		// Join all parts after the project name
+		repository = strings.Join(pathParts[2:], "/")
 	}
 
 	// Use the project from config
@@ -1423,8 +1433,13 @@ func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
 	log.Printf("Attempting to delete Harbor repository: %s/%s", project, repository)
 
 	// Build the Harbor API URL to delete the entire repository
+	// For nested repositories, we need to URL-encode the repository name
+	// Harbor requires double encoding for slashes in repository names
+	// First encode the slashes, then encode the whole string
+	doubleEncodedRepo := strings.ReplaceAll(repository, "/", "%2F")
+	doubleEncodedRepo = url.QueryEscape(doubleEncodedRepo)
 	harborURL := fmt.Sprintf("https://%s/api/v2.0/projects/%s/repositories/%s", 
-		h.config.Harbor.Endpoint, project, repository)
+		h.config.Harbor.Endpoint, project, doubleEncodedRepo)
 
 	// Create HTTP client with basic auth
 	req, err := http.NewRequest("DELETE", harborURL, nil)
