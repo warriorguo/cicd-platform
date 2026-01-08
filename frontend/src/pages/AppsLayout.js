@@ -101,7 +101,7 @@ const AppsLayout = () => {
         <Col span={19} style={{ height: '100%', overflow: 'auto' }}>
           {selectedAppId ? (
             <div style={{ height: '100%' }}>
-              <AppDetails />
+              <AppDetails onAppDeleted={fetchApps} />
             </div>
           ) : (
             <Card style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

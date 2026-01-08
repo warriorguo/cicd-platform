@@ -37,7 +37,7 @@ import { getStatusBadge } from '../utils/statusHelpers';
 
 const { Option } = Select;
 
-const AppDetails = () => {
+const AppDetails = ({ onAppDeleted }) => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [app, setApp] = useState(null);
@@ -57,7 +57,11 @@ const AppDetails = () => {
   const [scaleModalVisible, setScaleModalVisible] = useState(false);
   const [selectedDeployment, setSelectedDeployment] = useState(null);
   const [scaleForm] = Form.useForm();
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [scaling, setScaling] = useState(false);
+  const [deleteDeploymentModalVisible, setDeleteDeploymentModalVisible] = useState(false);
+  const [deletingDeployment, setDeletingDeployment] = useState(false);
   const [podLogsModalVisible, setPodLogsModalVisible] = useState(false);
   const [selectedPod, setSelectedPod] = useState(null);
   const [podLogs, setPodLogs] = useState('');
@@ -218,6 +222,14 @@ const AppDetails = () => {
   const handleScaleModalOk = async () => {
     try {
       const values = await scaleForm.validateFields();
+      
+      // If replicas is 0, show delete confirmation dialog
+      if (values.replicas === 0) {
+        setScaleModalVisible(false);
+        setDeleteDeploymentModalVisible(true);
+        return;
+      }
+      
       setScaling(true);
       
       await appsAPI.scaleDeployment(id, values);
@@ -373,6 +385,51 @@ const AppDetails = () => {
     }
   };
 
+  const handleDeleteApp = async () => {
+    if (!app) return;
+    
+    setDeleting(true);
+    try {
+      await appsAPI.deleteApp(app.id);
+      message.success(`Application "${app.name}" has been deleted successfully`);
+      setDeleteModalVisible(false);
+      
+      // Refresh the apps list if callback is provided
+      if (onAppDeleted) {
+        onAppDeleted();
+      }
+      
+      // Navigate back to apps list after successful deletion
+      navigate('/apps');
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Failed to delete application';
+      message.error(errorMessage);
+      console.error('Delete application error:', error);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteDeployment = async () => {
+    if (!selectedDeployment) return;
+    
+    setDeletingDeployment(true);
+    try {
+      await appsAPI.deleteDeployment(id, selectedDeployment.release_id);
+      message.success(`Deployment has been deleted successfully`);
+      setDeleteDeploymentModalVisible(false);
+      
+      // Refresh deployments after deletion
+      fetchDeployments();
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Failed to delete deployment';
+      message.error(errorMessage);
+      console.error('Delete deployment error:', error);
+    } finally {
+      setDeletingDeployment(false);
+    }
+  };
+
 
   const getPodStatusColor = (status) => {
     switch (status.toLowerCase()) {
@@ -495,9 +552,19 @@ const AppDetails = () => {
           </Space>
         }
         extra={
-          <Button icon={<ReloadOutlined />} onClick={fetchApp}>
-            Refresh
-          </Button>
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={fetchApp}>
+              Refresh
+            </Button>
+            <Button 
+              type="primary"
+              danger
+              icon={<DeleteOutlined />} 
+              onClick={() => setDeleteModalVisible(true)}
+            >
+              Delete App
+            </Button>
+          </Space>
         }
       >
         <Descriptions column={2} style={{ marginBottom: 24 }}>
@@ -1471,6 +1538,112 @@ const AppDetails = () => {
             }
           ]}
         />
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal
+        title={
+          <Space>
+            <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />
+            Delete Application
+          </Space>
+        }
+        visible={deleteModalVisible}
+        onOk={handleDeleteApp}
+        onCancel={() => setDeleteModalVisible(false)}
+        width={500}
+        okText="Delete"
+        cancelText="Cancel"
+        confirmLoading={deleting}
+        okButtonProps={{ danger: true }}
+      >
+        <div>
+          <Alert
+            message="Warning: This action cannot be undone"
+            description="Deleting this application will permanently remove all builds, releases, logs, and associated images from Harbor registry."
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+          
+          <div style={{ marginBottom: 16 }}>
+            <strong>Application to delete:</strong>
+            <div style={{ marginTop: 8, padding: '8px 12px', backgroundColor: '#f5f5f5', border: '1px solid #d9d9d9', borderRadius: '4px' }}>
+              <div><strong>Name:</strong> {app?.name}</div>
+              <div><strong>Repository:</strong> {app?.git_url}</div>
+              <div><strong>Registry:</strong> {app?.registry_repo}</div>
+            </div>
+          </div>
+          
+          {deployments.length > 0 && (
+            <Alert
+              message="Active Deployments Detected"
+              description="This application has running pods. All pods will be terminated before deletion."
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          
+          <div>
+            <strong>This will delete:</strong>
+            <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>
+              <li>Application configuration</li>
+              <li>All build releases and history</li>
+              <li>All build and deployment logs</li>
+              <li>All Docker images in Harbor registry</li>
+              <li>Running pods and deployments</li>
+            </ul>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete Deployment Confirmation Modal */}
+      <Modal
+        title={
+          <Space>
+            <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />
+            Delete Deployment
+          </Space>
+        }
+        visible={deleteDeploymentModalVisible}
+        onOk={handleDeleteDeployment}
+        onCancel={() => setDeleteDeploymentModalVisible(false)}
+        width={500}
+        okText="Delete Deployment"
+        cancelText="Cancel"
+        confirmLoading={deletingDeployment}
+        okButtonProps={{ danger: true }}
+      >
+        <div>
+          <Alert
+            message="Warning: This action cannot be undone"
+            description="Deleting this deployment will permanently remove all pods and the Kubernetes deployment."
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+          
+          <div style={{ marginBottom: 16 }}>
+            <strong>Deployment to delete:</strong>
+            <div style={{ marginTop: 8, padding: '8px 12px', backgroundColor: '#f5f5f5', border: '1px solid #d9d9d9', borderRadius: '4px' }}>
+              <div><strong>Release ID:</strong> #{selectedDeployment?.release_id}</div>
+              <div><strong>Commit SHA:</strong> {selectedDeployment?.commit_sha?.substring(0, 8) || '-'}</div>
+              <div><strong>Image:</strong> {selectedDeployment?.image_tag}</div>
+              <div><strong>Current Replicas:</strong> {selectedDeployment?.replicas?.ready || 0}/{selectedDeployment?.replicas?.desired || 1}</div>
+            </div>
+          </div>
+          
+          <div>
+            <strong>This will:</strong>
+            <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>
+              <li>Delete all running pods</li>
+              <li>Remove the Kubernetes deployment</li>
+              <li>Stop all traffic to this application version</li>
+              <li>Cannot be reversed - you'll need to redeploy</li>
+            </ul>
+          </div>
+        </div>
       </Modal>
     </div>
   );

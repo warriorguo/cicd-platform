@@ -34,8 +34,12 @@ type K8sConfig struct {
 }
 
 type HarborConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
 	Endpoint string `mapstructure:"endpoint"`
+	URL      string `mapstructure:"url"`
 	Project  string `mapstructure:"project"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
 }
 
 type DefaultsConfig struct {
@@ -62,8 +66,12 @@ func Load() (*Config, error) {
 	viper.SetDefault("k8s.in_cluster", false)
 	viper.SetDefault("k8s.pipeline_namespace", "cicd-runners")
 	viper.SetDefault("k8s.tekton_namespace", "tekton-pipelines")
+	viper.SetDefault("harbor.enabled", false)
 	viper.SetDefault("harbor.endpoint", "harbor.example.com")
+	viper.SetDefault("harbor.url", "harbor.example.com")
 	viper.SetDefault("harbor.project", "library")
+	viper.SetDefault("harbor.username", "admin")
+	viper.SetDefault("harbor.password", "")
 	viper.SetDefault("defaults.target_namespace", "default")
 	viper.SetDefault("defaults.context_path", ".")
 	viper.SetDefault("defaults.git_secret_ref", "")

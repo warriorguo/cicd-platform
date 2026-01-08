@@ -1458,3 +1458,22 @@ func (c *Client) GetPodDescribe(ctx context.Context, namespace, podName string) 
 
 	return describe, nil
 }
+
+// DeleteDeployment deletes a Kubernetes deployment
+func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName string) error {
+	// Delete the deployment using the apps/v1 API
+	deploymentsClient := c.clientset.AppsV1().Deployments(namespace)
+	
+	// Set the deletion policy to delete immediately
+	deletePolicy := metav1.DeletePropagationForeground
+	deleteOptions := metav1.DeleteOptions{
+		PropagationPolicy: &deletePolicy,
+	}
+	
+	err := deploymentsClient.Delete(ctx, deploymentName, deleteOptions)
+	if err != nil {
+		return fmt.Errorf("failed to delete deployment %s in namespace %s: %w", deploymentName, namespace, err)
+	}
+	
+	return nil
+}

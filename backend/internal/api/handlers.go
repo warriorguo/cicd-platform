@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1306,4 +1309,221 @@ func (h *Handler) GetPodDescribe(c *gin.Context) {
 		"namespace": app.TargetNamespace,
 		"describe":  describe,
 	})
+}
+
+// DeleteApp deletes an application and all its associated resources
+func (h *Handler) DeleteApp(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	// Get the app first
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Check if there are any deployed pods
+	var deployedReleasesCount int64
+	if err := h.db.Model(&models.Release{}).
+		Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
+		Count(&deployedReleasesCount).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to check deployed releases"})
+		return
+	}
+
+	if deployedReleasesCount > 0 {
+		// Check actual pods in Kubernetes
+		if h.k8sClient != nil {
+			pods, err := h.k8sClient.GetDeploymentPods(c.Request.Context(), app.TargetNamespace, app.TargetDeployName)
+			if err == nil && len(pods) > 0 {
+				c.JSON(400, gin.H{"error": "Cannot delete application with running pods. Please scale down the deployment first."})
+				return
+			}
+		}
+	}
+
+	// Get all releases for this app to delete Harbor images
+	var releases []models.Release
+	if err := h.db.Where("app_id = ?", appID).Find(&releases).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to fetch releases"})
+		return
+	}
+
+	// Delete Harbor images
+	if h.config.Harbor.Enabled {
+		for _, release := range releases {
+			if release.ImageTag != "" {
+				// Extract repository and tag from image tag
+				// Format: registry/library/app-name:tag
+				if err := h.deleteHarborImage(&app, release.ImageTag); err != nil {
+					// Log error but continue with deletion
+					fmt.Printf("Failed to delete Harbor image %s: %v\n", release.ImageTag, err)
+				}
+			}
+		}
+	}
+
+	// Delete build logs
+	if err := h.db.Where("release_id IN (SELECT id FROM releases WHERE app_id = ?)", appID).
+		Delete(&models.BuildLog{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to delete build logs"})
+		return
+	}
+
+	// Delete releases
+	if err := h.db.Where("app_id = ?", appID).Delete(&models.Release{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to delete releases"})
+		return
+	}
+
+	// Delete the app
+	if err := h.db.Delete(&app).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to delete application"})
+		return
+	}
+
+	c.JSON(200, gin.H{"message": "Application deleted successfully"})
+}
+
+// deleteHarborImage deletes an image repository from Harbor
+func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
+	// Extract repository name from app's registry repo
+	// Format: registry/project/repository
+	repository := ""
+	if app.RegistryRepo != "" {
+		// Extract repository name from registry_repo field
+		parts := strings.Split(app.RegistryRepo, "/")
+		if len(parts) >= 3 {
+			repository = parts[len(parts)-1] // Get the last part as repository name
+		} else {
+			return fmt.Errorf("invalid registry_repo format: %s", app.RegistryRepo)
+		}
+	} else {
+		// Fallback: parse from imageTag
+		parts := strings.Split(imageTag, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid image tag format: %s", imageTag)
+		}
+		repoPath := parts[0]
+		// Extract repository name
+		pathParts := strings.Split(repoPath, "/")
+		if len(pathParts) < 3 {
+			return fmt.Errorf("invalid repository path: %s", repoPath)
+		}
+		repository = pathParts[len(pathParts)-1]
+	}
+
+	// Use the project from config
+	project := h.config.Harbor.Project
+
+	log.Printf("Attempting to delete Harbor repository: %s/%s", project, repository)
+
+	// Build the Harbor API URL to delete the entire repository
+	harborURL := fmt.Sprintf("https://%s/api/v2.0/projects/%s/repositories/%s", 
+		h.config.Harbor.Endpoint, project, repository)
+
+	// Create HTTP client with basic auth
+	req, err := http.NewRequest("DELETE", harborURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	req.SetBasicAuth(h.config.Harbor.Username, h.config.Harbor.Password)
+	req.Header.Set("Accept", "application/json")
+
+	// Skip TLS verification for local Harbor (not recommended for production)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	log.Printf("Deleting Harbor repository: %s", harborURL)
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to delete Harbor repository: %w", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Harbor delete response status: %d", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to delete Harbor repository, status: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("Successfully deleted Harbor repository: %s/%s", project, repository)
+	return nil
+}
+
+// DeleteDeployment deletes a specific deployment and all its pods
+func (h *Handler) DeleteDeployment(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	releaseID, err := strconv.Atoi(c.Param("releaseId"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid release ID"})
+		return
+	}
+
+	// Get the app first
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Get the release
+	var release models.Release
+	if err := h.db.First(&release, releaseID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Release not found"})
+		return
+	}
+
+	// Verify the release belongs to this app
+	if release.AppID != uint(appID) {
+		c.JSON(400, gin.H{"error": "Release does not belong to this application"})
+		return
+	}
+
+	// Check if this release is deployed
+	if release.Status != models.StatusDeployed {
+		c.JSON(400, gin.H{"error": "Release is not currently deployed"})
+		return
+	}
+
+	// Delete the deployment from Kubernetes
+	deploymentName := app.TargetDeployName
+	if deploymentName == "" {
+		deploymentName = app.Name
+	}
+
+	if h.k8sClient != nil {
+		err = h.k8sClient.DeleteDeployment(c.Request.Context(), app.TargetNamespace, deploymentName)
+		if err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("Failed to delete Kubernetes deployment: %v", err)})
+			return
+		}
+	} else {
+		c.JSON(500, gin.H{"error": "Kubernetes client not available"})
+		return
+	}
+
+	// Update the release status to indicate it's no longer deployed
+	release.Status = models.StatusSuccess // Change back to success status
+	if err := h.db.Save(&release).Error; err != nil {
+		// Log error but don't fail the operation since K8s deletion succeeded
+		log.Printf("Warning: Failed to update release status after deployment deletion: %v", err)
+	}
+
+	c.JSON(200, gin.H{"message": "Deployment deleted successfully"})
 }
