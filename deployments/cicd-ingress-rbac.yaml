@@ -1,0 +1,59 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cicd-ingress-writer
+  namespace: default
+rules:
+# Ingress resources
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+# Service resources (to verify service exists)
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get","list","watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-ingress-writer-binding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: pipeline-runner
+  namespace: cicd-runners
+roleRef:
+  kind: Role
+  name: cicd-ingress-writer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Additional ClusterRole for multi-namespace support
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cicd-ingress-writer-cluster
+rules:
+# Ingress resources across namespaces
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+# Service resources across namespaces
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get","list","watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cicd-ingress-writer-cluster-binding
+subjects:
+- kind: ServiceAccount
+  name: pipeline-runner
+  namespace: cicd-runners
+roleRef:
+  kind: ClusterRole
+  name: cicd-ingress-writer-cluster
+  apiGroup: rbac.authorization.k8s.io

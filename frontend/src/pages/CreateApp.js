@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, message, Space, Select } from 'antd';
+import { Form, Input, InputNumber, Button, Card, message, Space, Select } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
@@ -46,6 +46,7 @@ const CreateApp = () => {
             default_branch: 'main',
             build_type: 'dockerfile',
             dockerfile_path: 'Dockerfile',
+            service_port: 8080,
           }}
           onValuesChange={(changedValues) => {
             if (changedValues.build_type) {
@@ -109,6 +110,22 @@ const CreateApp = () => {
             <Input placeholder={buildType === 'docker-compose' ? 'docker-compose.yml' : 'Dockerfile'} />
           </Form.Item>
 
+          <Form.Item
+            label="Service Port"
+            name="service_port"
+            tooltip="The port your application container will expose and listen on"
+            rules={[
+              { required: true, message: 'Please enter service port' },
+              { type: 'number', min: 1, max: 65535, message: 'Port must be between 1 and 65535' },
+            ]}
+          >
+            <InputNumber 
+              placeholder="8080" 
+              style={{ width: '100%' }}
+              min={1}
+              max={65535}
+            />
+          </Form.Item>
 
           <Form.Item>
             <Space>

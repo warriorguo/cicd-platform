@@ -46,6 +46,7 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		DefaultBranch  string           `json:"default_branch"`
 		BuildType      models.BuildType `json:"build_type"`
 		DockerfilePath string           `json:"dockerfile_path"`
+		ServicePort    int              `json:"service_port"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -67,6 +68,9 @@ func (h *Handler) CreateApp(c *gin.Context) {
 			req.DockerfilePath = "Dockerfile"
 		}
 	}
+	if req.ServicePort == 0 {
+		req.ServicePort = 8080 // Default service port
+	}
 
 	// Generate default values from config
 	registryRepo := fmt.Sprintf("%s/%s/%s", h.config.Harbor.Endpoint, h.config.Harbor.Project, req.Name)
@@ -84,6 +88,10 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		Replicas:          1,         // Default replicas, will be configurable in deploy stage
 		GitSecretRef:      h.config.Defaults.GitSecretRef,
 		RegistrySecretRef: h.config.Defaults.RegistrySecretRef,
+		ServiceName:       req.Name,      // Default service name same as app name
+		ServicePort:       req.ServicePort, // Use user-provided service port
+		IngressEnabled:    true,          // Enable Ingress by default
+		IngressHost:       "",            // Empty for path-based routing
 		EnvVars:           models.EnvVars{}, // Empty by default, will be configurable in deploy stage
 	}
 
@@ -426,7 +434,7 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 
 			// Update overall release status
 			var release models.Release
-			if err := h.db.First(&release, releaseID).Error; err != nil {
+			if err := h.db.Preload("App").First(&release, releaseID).Error; err != nil {
 				return
 			}
 
@@ -714,6 +722,7 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			Replicas:         replicas,
 			EnvVars:          req.EnvVars,
 			MaxUnavailable:   maxUnavailable,
+			ServicePort:      release.App.ServicePort, // Use app's configured service port
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
@@ -776,7 +785,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 			}
 
 			var release models.Release
-			if err := h.db.First(&release, releaseID).Error; err != nil {
+			if err := h.db.Preload("App").First(&release, releaseID).Error; err != nil {
 				return
 			}
 
@@ -792,6 +801,45 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 			case "Success":
 				release.Status = models.StatusDeployed
 				release.FinishedAt = &now
+				
+				// Create or update Ingress if enabled
+				if release.App.IngressEnabled {
+					serviceName := release.App.ServiceName
+					if serviceName == "" {
+						// Default service name is same as deployment name
+						serviceName = release.App.TargetDeployName
+					}
+					
+					ingressConfig := &k8s.IngressConfig{
+						Namespace:    release.App.TargetNamespace,
+						AppName:      release.App.Name,
+						ServiceName:  serviceName,
+						ServicePort:  release.App.ServicePort,
+						CommitSHA:    release.CommitSHA,
+						Host:         release.App.IngressHost, // Custom host if specified
+						Path:         h.config.Ingress.DefaultPath,
+						HostTemplate: h.config.Ingress.HostTemplate,
+					}
+					
+					if err := h.k8sClient.CreateOrUpdateIngress(ctx, ingressConfig); err != nil {
+						// Log error but don't fail the deployment
+						log.Printf("Failed to create/update Ingress for app %s: %v", release.App.Name, err)
+					} else {
+						// Update release with Ingress info
+						release.IngressCreated = true
+						release.IngressPath = h.config.Ingress.DefaultPath
+						
+						// Set the actual host used (either custom or generated from template)
+						if release.App.IngressHost != "" {
+							release.IngressHost = release.App.IngressHost
+						} else {
+							// Generate host from template
+							release.IngressHost = strings.Replace(h.config.Ingress.HostTemplate, "*", release.App.Name, 1)
+						}
+						log.Printf("Successfully created/updated Ingress for app %s with host %s", release.App.Name, release.IngressHost)
+					}
+				}
+				
 				h.db.Save(&release)
 				return
 
@@ -1388,6 +1436,16 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 		return
 	}
 
+	// Delete Ingress if it exists
+	if h.k8sClient != nil {
+		if err := h.k8sClient.DeleteIngress(c.Request.Context(), app.TargetNamespace, app.Name); err != nil {
+			// Log error but continue with deletion
+			log.Printf("Failed to delete Ingress for app %s: %v", app.Name, err)
+		} else {
+			log.Printf("Successfully deleted Ingress for app %s", app.Name)
+		}
+	}
+	
 	// Delete the app
 	if err := h.db.Delete(&app).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to delete application"})
@@ -1474,6 +1532,79 @@ func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
 
 	log.Printf("Successfully deleted Harbor repository: %s/%s", project, repository)
 	return nil
+}
+
+// GetAppIngress gets the Ingress information for an app
+func (h *Handler) GetAppIngress(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	// Get the app
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Get the latest deployed release
+	var release models.Release
+	if err := h.db.Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
+		Order("created_at DESC").
+		First(&release).Error; err != nil {
+		c.JSON(404, gin.H{"error": "No deployed release found"})
+		return
+	}
+
+	// Get Ingress from Kubernetes if available
+	ingressInfo := gin.H{
+		"enabled": app.IngressEnabled,
+		"created": release.IngressCreated,
+		"path":    release.IngressPath,
+		"host":    release.IngressHost,
+	}
+
+	if h.k8sClient != nil && release.IngressCreated {
+		ingress, err := h.k8sClient.GetIngress(c.Request.Context(), app.TargetNamespace, app.Name)
+		if err == nil && ingress != nil {
+			// Extract the actual URL from the Ingress (host-based routing)
+			if len(ingress.Spec.Rules) > 0 {
+				rule := ingress.Spec.Rules[0]
+				host := rule.Host
+				
+				if len(rule.HTTP.Paths) > 0 {
+					path := rule.HTTP.Paths[0].Path
+					// For host-based routing, URL is simply http://host + path
+					ingressInfo["url"] = fmt.Sprintf("http://%s%s", host, path)
+					ingressInfo["host"] = host
+					ingressInfo["path"] = path
+				}
+			}
+
+			// Add annotations
+			ingressInfo["annotations"] = ingress.Annotations
+		}
+	}
+
+	// If no Ingress found but should exist, generate expected URL
+	if release.IngressCreated {
+		if url, exists := ingressInfo["url"]; !exists || url == "" {
+			expectedHost := release.IngressHost
+			if expectedHost == "" {
+				// Generate from template
+				expectedHost = strings.Replace(h.config.Ingress.HostTemplate, "*", app.Name, 1)
+			}
+			expectedPath := release.IngressPath
+			if expectedPath == "" {
+				expectedPath = h.config.Ingress.DefaultPath
+			}
+			ingressInfo["url"] = fmt.Sprintf("http://%s%s", expectedHost, expectedPath)
+		}
+	}
+
+	c.JSON(200, ingressInfo)
 }
 
 // DeleteDeployment deletes a specific deployment and all its pods

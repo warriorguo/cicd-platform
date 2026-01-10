@@ -72,6 +72,8 @@ const AppDetails = ({ onAppDeleted }) => {
   const [activeTab, setActiveTab] = useState('logs');
   const [podDescribe, setPodDescribe] = useState(null);
   const [loadingDescribe, setLoadingDescribe] = useState(false);
+  const [ingressInfo, setIngressInfo] = useState(null);
+  const [loadingIngress, setLoadingIngress] = useState(false);
 
   // Helper function to clean ANSI escape sequences
   const cleanAnsiEscapes = (text) => {
@@ -84,6 +86,7 @@ const AppDetails = ({ onAppDeleted }) => {
       fetchApp();
       fetchReleases();
       fetchDeployments();
+      fetchIngress();
     }
   }, [id]);
 
@@ -104,9 +107,9 @@ const AppDetails = ({ onAppDeleted }) => {
     setReleasesLoading(true);
     try {
       const response = await appsAPI.getReleases(id);
-      // Filter to show only build-related releases (pending, running, success, failed)
+      // Filter to show only build-related releases (pending, running, success, failed, deployed)
       const buildReleases = response.data.releases?.filter(release => 
-        ['pending', 'running', 'success', 'failed'].includes(release.status)
+        ['pending', 'running', 'success', 'failed', 'deployed'].includes(release.status)
       ) || [];
       setReleases(buildReleases);
     } catch (error) {
@@ -123,6 +126,19 @@ const AppDetails = ({ onAppDeleted }) => {
     } catch (error) {
       message.error('Failed to fetch deployments');
     } finally {
+    }
+  };
+
+  const fetchIngress = async () => {
+    setLoadingIngress(true);
+    try {
+      const response = await appsAPI.getAppIngress(id);
+      setIngressInfo(response.data);
+    } catch (error) {
+      // Don't show error message as ingress might not exist yet
+      setIngressInfo(null);
+    } finally {
+      setLoadingIngress(false);
     }
   };
 
@@ -842,6 +858,78 @@ const AppDetails = ({ onAppDeleted }) => {
                 )}
               </div>
             ))
+          )}
+        </Card>
+
+        {/* Ingress Information Card */}
+        <Card 
+          title={
+            <Space>
+              <span>Ingress Information</span>
+              <Button 
+                type="text" 
+                icon={<ReloadOutlined />} 
+                size="small" 
+                onClick={fetchIngress}
+                loading={loadingIngress}
+              />
+            </Space>
+          }
+          style={{ marginBottom: '24px' }}
+        >
+          {loadingIngress ? (
+            <div>Loading ingress information...</div>
+          ) : ingressInfo && ingressInfo.created ? (
+            <Descriptions column={2} bordered size="small">
+              <Descriptions.Item label="Status" span={2}>
+                <Badge status="success" text="Active" />
+              </Descriptions.Item>
+              <Descriptions.Item label="Host">
+                {ingressInfo.host || `${app?.name}.local.playquota.com`}
+              </Descriptions.Item>
+              <Descriptions.Item label="Path">
+                <code>{ingressInfo.path || '/'}</code>
+              </Descriptions.Item>
+              <Descriptions.Item label="Access URL" span={2}>
+                <a 
+                  href={ingressInfo.url || `http://${app?.name}.local.playquota.com/`}
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                >
+                  {ingressInfo.url || `http://${app?.name}.local.playquota.com/`}
+                </a>
+              </Descriptions.Item>
+              {ingressInfo.annotations && (
+                <Descriptions.Item label="Annotations" span={2}>
+                  <div style={{ fontSize: '12px', fontFamily: 'monospace' }}>
+                    {Object.entries(ingressInfo.annotations).map(([key, value]) => (
+                      <div key={key}>
+                        <strong>{key}:</strong> {value}
+                      </div>
+                    ))}
+                  </div>
+                </Descriptions.Item>
+              )}
+              {ingressInfo.created_at && (
+                <Descriptions.Item label="Created" span={2}>
+                  {new Date(ingressInfo.created_at).toLocaleString()}
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+          ) : app?.ingress_enabled !== false ? (
+            <Alert 
+              message="Ingress Not Available" 
+              description="Ingress will be automatically created after the first successful deployment."
+              type="info" 
+              showIcon 
+            />
+          ) : (
+            <Alert 
+              message="Ingress Disabled" 
+              description="Ingress creation is disabled for this application."
+              type="warning" 
+              showIcon 
+            />
           )}
         </Card>
 

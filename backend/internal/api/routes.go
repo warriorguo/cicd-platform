@@ -34,6 +34,7 @@ func SetupRoutes(handler *Handler) *gin.Engine {
 		api.GET("/apps/:id/pods/:podName/logs", handler.GetPodLogs)
 		api.GET("/apps/:id/pods/:podName/tty", handler.GetPodTTY)
 		api.GET("/apps/:id/pods/:podName/describe", handler.GetPodDescribe)
+		api.GET("/apps/:id/ingress", handler.GetAppIngress)
 		api.POST("/apps/:id/validate", handler.ValidateDockerfile)
 		api.DELETE("/apps/:id", handler.DeleteApp)
 		api.DELETE("/apps/:id/deployments/:releaseId", handler.DeleteDeployment)

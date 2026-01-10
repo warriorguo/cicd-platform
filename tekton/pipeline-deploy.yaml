@@ -25,6 +25,10 @@ spec:
       type: string
       description: Environment variables as JSON array
       default: "[]"
+    - name: service-port
+      type: string
+      description: Container and service port
+      default: "8080"
 
   tasks:
     - name: update-deployment
@@ -39,6 +43,8 @@ spec:
           - name: REPLICAS
             type: string
           - name: ENV_VARS
+            type: string
+          - name: SERVICE_PORT
             type: string
         steps:
           - name: update
@@ -90,7 +96,7 @@ spec:
                     - name: $(params.DEPLOYMENT_NAME)
                       image: $(params.IMAGE)
                       ports:
-                      - containerPort: 80
+                      - containerPort: $(params.SERVICE_PORT)
                       resources:
                         requests:
                           memory: "64Mi"
@@ -110,8 +116,8 @@ spec:
                 selector:
                   app: $(params.DEPLOYMENT_NAME)
                 ports:
-                - port: 80
-                  targetPort: 80
+                - port: $(params.SERVICE_PORT)
+                  targetPort: $(params.SERVICE_PORT)
                   protocol: TCP
                 type: ClusterIP
               EOF
@@ -143,3 +149,5 @@ spec:
           value: $(params.replicas)
         - name: ENV_VARS
           value: $(params.env-vars)
+        - name: SERVICE_PORT
+          value: $(params.service-port)

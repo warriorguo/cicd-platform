@@ -10,6 +10,7 @@ type Config struct {
 	K8s      K8sConfig      `mapstructure:"k8s"`
 	Harbor   HarborConfig   `mapstructure:"harbor"`
 	Defaults DefaultsConfig `mapstructure:"defaults"`
+	Ingress  IngressConfig  `mapstructure:"ingress"`
 }
 
 type ServerConfig struct {
@@ -49,6 +50,11 @@ type DefaultsConfig struct {
 	RegistrySecretRef string `mapstructure:"registry_secret_ref"`
 }
 
+type IngressConfig struct {
+	HostTemplate string `mapstructure:"host_template"`
+	DefaultPath  string `mapstructure:"default_path"`
+}
+
 func Load() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -77,6 +83,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("defaults.context_path", ".")
 	viper.SetDefault("defaults.git_secret_ref", "")
 	viper.SetDefault("defaults.registry_secret_ref", "")
+	viper.SetDefault("ingress.host_template", "*.localhost")
+	viper.SetDefault("ingress.default_path", "/")
 
 	viper.AutomaticEnv()
 

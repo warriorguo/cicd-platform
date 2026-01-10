@@ -32,6 +32,7 @@ type DeployPipelineRunRequest struct {
 	Replicas         int
 	EnvVars          models.EnvVars
 	MaxUnavailable   int
+	ServicePort      int // Container and service port
 }
 
 /*

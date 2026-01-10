@@ -21,6 +21,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -340,6 +341,7 @@ func (c *Client) CreateDeployPipelineRun(ctx context.Context, req *DeployPipelin
 		{"name": "deploy-name", "value": req.TargetDeployName},
 		{"name": "replicas", "value": fmt.Sprintf("%d", req.Replicas)},
 		{"name": "max-unavailable", "value": fmt.Sprintf("%d%%", req.MaxUnavailable)},
+		{"name": "service-port", "value": fmt.Sprintf("%d", req.ServicePort)},
 	}
 
 	// Add environment variables as JSON string
@@ -1476,4 +1478,153 @@ func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName
 	}
 	
 	return nil
+}
+
+// IngressConfig holds configuration for creating/updating an Ingress
+type IngressConfig struct {
+	Name         string
+	Namespace    string
+	AppName      string
+	ServiceName  string
+	ServicePort  int
+	CommitSHA    string
+	Host         string // Required for host-based routing
+	Path         string // Path to use (defaults to "/")
+	HostTemplate string // Template like "*.local.playquota.com"
+}
+
+// generateHostFromTemplate generates a host from template and app name
+// For example: "*.local.playquota.com" + "myapp" -> "myapp.local.playquota.com"
+func generateHostFromTemplate(template, appName string) string {
+	if template == "" {
+		return ""
+	}
+	// Replace * with app name
+	return strings.Replace(template, "*", appName, 1)
+}
+
+// CreateOrUpdateIngress creates or updates an Ingress resource using host-based routing
+func (c *Client) CreateOrUpdateIngress(ctx context.Context, config *IngressConfig) error {
+	ingressClient := c.clientset.NetworkingV1().Ingresses(config.Namespace)
+	
+	// Define the Ingress name
+	ingressName := fmt.Sprintf("ing-%s", config.AppName)
+	if config.Name != "" {
+		ingressName = config.Name
+	}
+	
+	// Generate host from template if not provided
+	host := config.Host
+	if host == "" && config.HostTemplate != "" {
+		host = generateHostFromTemplate(config.HostTemplate, config.AppName)
+	}
+	
+	// Use default path if not specified
+	path := config.Path
+	if path == "" {
+		path = "/"
+	}
+	
+	// Define annotations (no rewrite-target for host-based routing with / path)
+	annotations := map[string]string{
+		"cicd.platform/app":       config.AppName,
+		"cicd.platform/commit":    config.CommitSHA,
+		"cicd.platform/updatedAt": time.Now().Format(time.RFC3339),
+	}
+	
+	// Create Ingress spec with host-based routing
+	pathType := networkingv1.PathTypePrefix
+	ingressSpec := networkingv1.IngressSpec{
+		IngressClassName: &[]string{"nginx"}[0], // Use ingressClassName instead of annotation
+		Rules: []networkingv1.IngressRule{
+			{
+				Host: host,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{
+							{
+								Path:     path,
+								PathType: &pathType,
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: config.ServiceName,
+										Port: networkingv1.ServiceBackendPort{
+											Number: int32(config.ServicePort),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	
+	// Check if Ingress already exists
+	existingIngress, err := ingressClient.Get(ctx, ingressName, metav1.GetOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("failed to check existing ingress: %w", err)
+		}
+		
+		// Create new Ingress
+		ingress := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        ingressName,
+				Namespace:   config.Namespace,
+				Annotations: annotations,
+			},
+			Spec: ingressSpec,
+		}
+		
+		_, err = ingressClient.Create(ctx, ingress, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to create ingress: %w", err)
+		}
+		return nil
+	}
+	
+	// Update existing Ingress
+	// Check ownership
+	if existingApp, ok := existingIngress.Annotations["cicd.platform/app"]; ok && existingApp != config.AppName {
+		return fmt.Errorf("ingress %s is owned by another app: %s", ingressName, existingApp)
+	}
+	
+	// Update annotations and spec
+	existingIngress.Annotations = annotations
+	existingIngress.Spec = ingressSpec
+	
+	_, err = ingressClient.Update(ctx, existingIngress, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update ingress: %w", err)
+	}
+	
+	return nil
+}
+
+// DeleteIngress deletes an Ingress resource
+func (c *Client) DeleteIngress(ctx context.Context, namespace, appName string) error {
+	ingressClient := c.clientset.NetworkingV1().Ingresses(namespace)
+	ingressName := fmt.Sprintf("ing-%s", appName)
+	
+	err := ingressClient.Delete(ctx, ingressName, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete ingress: %w", err)
+	}
+	
+	return nil
+}
+
+// GetIngress retrieves an Ingress resource
+func (c *Client) GetIngress(ctx context.Context, namespace, appName string) (*networkingv1.Ingress, error) {
+	ingressClient := c.clientset.NetworkingV1().Ingresses(namespace)
+	ingressName := fmt.Sprintf("ing-%s", appName)
+	
+	ingress, err := ingressClient.Get(ctx, ingressName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ingress: %w", err)
+	}
+	
+	return ingress, nil
 }

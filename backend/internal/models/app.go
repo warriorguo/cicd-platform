@@ -56,6 +56,10 @@ type App struct {
 	Replicas         int       `json:"replicas" gorm:"default:1"`
 	GitSecretRef     string    `json:"git_secret_ref"`
 	RegistrySecretRef string   `json:"registry_secret_ref"`
+	ServiceName      string    `json:"service_name"`     // Service name for Ingress
+	ServicePort      int       `json:"service_port" gorm:"default:8080"` // Service port for Ingress
+	IngressEnabled   bool      `json:"ingress_enabled" gorm:"default:true"` // Whether to create Ingress
+	IngressHost      string    `json:"ingress_host"`     // Optional custom host
 	EnvVars          EnvVars   `json:"env_vars" gorm:"type:jsonb"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
@@ -75,6 +79,9 @@ type Release struct {
 	StartedAt   *time.Time     `json:"started_at"`
 	FinishedAt  *time.Time     `json:"finished_at"`
 	K8sRef      string         `json:"k8s_ref"`
+	IngressCreated bool        `json:"ingress_created" gorm:"default:false"` // Track if Ingress was created
+	IngressHost    string      `json:"ingress_host"`     // The actual Ingress host used
+	IngressPath    string      `json:"ingress_path"`     // The actual Ingress path used
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `json:"-" gorm:"index"`

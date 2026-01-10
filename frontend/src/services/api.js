@@ -52,6 +52,7 @@ export const appsAPI = {
   },
   getPodDescribe: (appId, podName) => api.get(`/apps/${appId}/pods/${podName}/describe`),
   validateDockerfile: (id, branch) => api.post(`/apps/${id}/validate?branch=${branch || ''}`),
+  getAppIngress: (id) => api.get(`/apps/${id}/ingress`),
   
   // Releases
   createRelease: (appId, data) => api.post(`/apps/${appId}/releases`, data),

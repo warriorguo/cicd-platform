@@ -18,3 +18,21 @@ k8s:
   kubeconfig: ""  # Auto-detected if empty
   pipeline_namespace: "cicd-runners"
   tekton_namespace: "tekton-pipelines"
+
+harbor:
+  enabled: true
+  endpoint: "local-harbor.playquota.com"
+  url: "local-harbor.playquota.com"
+  project: "library"
+  username: "admin"
+  password: "Harbor12345"
+
+defaults:
+  target_namespace: "default"
+  context_path: "."
+  git_secret_ref: ""
+  registry_secret_ref: "kaniko-docker-config-ssl-manual"
+
+ingress:
+  host_template: "*.local.playquota.com"
+  default_path: "/"
