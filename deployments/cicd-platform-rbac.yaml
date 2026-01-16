@@ -1,0 +1,57 @@
+# RBAC for CI/CD Platform to manage deployments and pods
+# Apply this to allow the platform to view and manage application deployments
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-platform
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cicd-platform-manager
+rules:
+# Deployment management
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/scale", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Pod management (for logs, exec, etc.)
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/exec"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# Service management
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Ingress management
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# ConfigMaps and Secrets (for app configuration)
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Events (for monitoring)
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+# Namespaces (for multi-namespace support)
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cicd-platform-manager-binding
+subjects:
+- kind: ServiceAccount
+  name: cicd-platform
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cicd-platform-manager
+  apiGroup: rbac.authorization.k8s.io
