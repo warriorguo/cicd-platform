@@ -679,6 +679,15 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 		return
 	}
 
+	// Save env vars to the app if provided
+	if len(req.EnvVars) > 0 {
+		release.App.EnvVars = req.EnvVars
+		if err := h.db.Save(&release.App).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save environment variables"})
+			return
+		}
+	}
+
 	// For upgrade operation, determine replicas based on existing deployment
 	replicas := 1 // Default for new deployment
 	var lastDeployed models.Release
@@ -713,6 +722,12 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			maxUnavailable = 25 // Default to 25%
 		}
 
+		// Use request env vars if provided, otherwise use app's saved env vars
+		envVars := req.EnvVars
+		if len(envVars) == 0 {
+			envVars = release.App.EnvVars
+		}
+
 		deployReq := &k8s.DeployPipelineRunRequest{
 			AppName:          release.App.Name,
 			ImageRepo:        release.App.RegistryRepo,
@@ -720,7 +735,7 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			TargetNamespace:  release.App.TargetNamespace,
 			TargetDeployName: release.App.TargetDeployName,
 			Replicas:         replicas,
-			EnvVars:          req.EnvVars,
+			EnvVars:          envVars,
 			MaxUnavailable:   maxUnavailable,
 			ServicePort:      release.App.ServicePort, // Use app's configured service port
 		}

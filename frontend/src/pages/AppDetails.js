@@ -222,7 +222,7 @@ const AppDetails = ({ onAppDeleted }) => {
   const showDeployModal = (releaseId) => {
     setSelectedReleaseId(releaseId);
     deployForm.setFieldsValue({
-      env_vars: []
+      env_vars: app?.env_vars || []
     });
     setDeployModalVisible(true);
   };
