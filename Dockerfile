@@ -29,14 +29,14 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 # Copy go mod files and download dependencies
-COPY backend/go.mod backend/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY backend/ ./
+# Copy backend source code
+COPY backend/ ./backend/
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o cicd-platform ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o cicd-platform ./backend/cmd/main.go
 
 # -----------------------------------------------------------------------------
 # Stage 3: Final Production Image with Nginx
