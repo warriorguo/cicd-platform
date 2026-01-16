@@ -343,7 +343,7 @@ const DeployDetails = () => {
           <Alert
             type="info"
             message="Ready to Deploy"
-            description="The build has completed successfully. Use the Deploy button in the header to start the deployment process."
+            description="The build has completed successfully and is ready for deployment."
             showIcon
             style={{ marginTop: 16 }}
           />
