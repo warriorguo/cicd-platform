@@ -1,0 +1,61 @@
+# Host-based Ingress template for applications deployed via CI/CD platform
+# This template shows the format for Ingress resources created by the platform
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: "{{APP_NAME}}-ingress"
+  namespace: "{{TARGET_NAMESPACE}}"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    cicd.platform/app: "{{APP_NAME}}"
+    cicd.platform/commit: "{{COMMIT_SHA}}"
+    cicd.platform/updatedAt: "{{UPDATED_AT}}"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: "{{APP_NAME}}.localhost"  # Host-based routing format
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: "{{APP_NAME}}"
+            port:
+              number: {{SERVICE_PORT}}
+
+---
+# Example usage for actual deployment:
+# Replace placeholders:
+# - {{APP_NAME}}: Name of your application (e.g., hello-cicd-app)
+# - {{TARGET_NAMESPACE}}: Kubernetes namespace (e.g., default)
+# - {{COMMIT_SHA}}: Git commit SHA for tracking
+# - {{UPDATED_AT}}: Deployment timestamp
+# - {{SERVICE_PORT}}: Application service port (e.g., 80, 3000, 8080)
+
+# Example result:
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hello-cicd-app-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    cicd.platform/app: "hello-cicd-app"
+    cicd.platform/commit: "8dfd0b3d9ee440df16bc34d6b941ef2496ac90ad"
+    cicd.platform/updatedAt: "2026-01-10T10:04:18+08:00"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: hello-cicd-app.localhost
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: hello-cicd-app
+            port:
+              number: 80
