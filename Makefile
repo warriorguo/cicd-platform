@@ -140,6 +140,40 @@ npm-build: ## Build frontend for production
 # Combined local development
 install-deps: go-deps npm-install ## Install all dependencies
 
+# Ingress management targets
+generate-ingress: ## Generate Ingress YAML for an application
+	@if [ -z "$(APP_NAME)" ]; then \
+		echo "Error: APP_NAME is required. Usage: make generate-ingress APP_NAME=my-app"; \
+		exit 1; \
+	fi
+	@echo "Generating Ingress for application: $(APP_NAME)"
+	@sed -e 's/{{APP_NAME}}/$(APP_NAME)/g' \
+	     -e 's/{{TARGET_NAMESPACE}}/$(TARGET_NAMESPACE)/g' \
+	     -e 's/{{COMMIT_SHA}}/$(COMMIT_SHA)/g' \
+	     -e 's/{{UPDATED_AT}}/$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")/g' \
+	     -e 's/{{SERVICE_PORT}}/$(SERVICE_PORT)/g' \
+	     deployments/app-ingress-template.yaml > $(APP_NAME)-ingress.yaml
+	@echo "Generated: $(APP_NAME)-ingress.yaml"
+
+apply-ingress: generate-ingress ## Generate and apply Ingress for an application
+	@kubectl apply -f $(APP_NAME)-ingress.yaml
+	@echo "Applied Ingress for $(APP_NAME)"
+
+show-app-ingress-template: ## Show the latest Ingress template format
+	@echo "=== Host-based Ingress Template ==="
+	@echo "This template is used by the CI/CD platform for creating application Ingresses:"
+	@echo ""
+	@head -n 20 deployments/app-ingress-template.yaml
+	@echo ""
+	@echo "Key features:"
+	@echo "- Host-based routing: {app-name}.localhost"
+	@echo "- Configurable service port"
+	@echo "- Platform annotations for tracking"
+	@echo "- NGINX ingress controller compatible"
+
 # Default values
 REGISTRY ?= harbor.company.com
 TAG ?= latest
+TARGET_NAMESPACE ?= default
+SERVICE_PORT ?= 80
+COMMIT_SHA ?= latest
