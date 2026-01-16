@@ -52,19 +52,16 @@ RUN mkdir -p /run/nginx /var/log/supervisor /app
 WORKDIR /app
 
 # Copy backend binary
-COPY --from=backend-builder /app/cicd-platform .
+COPY --from=backend-builder /app/cicd-platform ./
 
 # Copy frontend build to nginx html directory
-COPY --from=frontend-builder /app/frontend/build /usr/share/nginx/html
+COPY --from=frontend-builder /app/frontend/build/ /usr/share/nginx/html/
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 
 # Copy supervisord configuration
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-# Copy default config (optional)
-COPY backend/config.yaml ./config.yaml 2>/dev/null || true
 
 # Environment variables
 ENV SERVER_HOST=127.0.0.1
