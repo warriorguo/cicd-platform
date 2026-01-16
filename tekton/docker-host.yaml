@@ -1,0 +1,69 @@
+# Docker Host for docker-compose builds
+# This deploys a Docker-in-Docker daemon as a service that pipeline tasks can connect to
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker-host
+  namespace: cicd-runners
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docker-host
+  template:
+    metadata:
+      labels:
+        app: docker-host
+    spec:
+      containers:
+        - name: docker-dind
+          image: docker:dind
+          securityContext:
+            privileged: true
+          env:
+            # Disable TLS - required for non-TLS connections
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          args:
+            - --host=tcp://0.0.0.0:2375
+            - --host=unix:///var/run/docker.sock
+            - --tls=false
+            - --storage-driver=overlay2
+          ports:
+            - containerPort: 2375
+          volumeMounts:
+            - name: docker-storage
+              mountPath: /var/lib/docker
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          readinessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["docker", "info"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: docker-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-host
+  namespace: cicd-runners
+spec:
+  selector:
+    app: docker-host
+  ports:
+    - port: 2375
+      targetPort: 2375
+  type: ClusterIP

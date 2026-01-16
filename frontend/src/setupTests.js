@@ -38,10 +38,10 @@ afterEach(() => {
   console.warn = originalWarn;
 });
 
-// Mock window.matchMedia
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: jest.fn().mockImplementation(query => ({
+// Mock window.matchMedia - must be a proper function, not jest.fn()
+// This is needed for Ant Design's responsive observer
+window.matchMedia = window.matchMedia || function(query) {
+  return {
     matches: false,
     media: query,
     onchange: null,
@@ -50,8 +50,8 @@ Object.defineProperty(window, 'matchMedia', {
     addEventListener: jest.fn(),
     removeEventListener: jest.fn(),
     dispatchEvent: jest.fn(),
-  })),
-});
+  };
+};
 
 // Mock ResizeObserver
 global.ResizeObserver = jest.fn().mockImplementation(() => ({

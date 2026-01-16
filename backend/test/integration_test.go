@@ -22,6 +22,26 @@ import (
 	"github.com/warriorguo/cicd-platform/backend/pkg/config"
 )
 
+func testConfig() *config.Config {
+	return &config.Config{
+		Harbor: config.HarborConfig{
+			Enabled:  false,
+			Endpoint: "harbor.test.com",
+			Project:  "library",
+		},
+		Defaults: config.DefaultsConfig{
+			TargetNamespace:   "default",
+			ContextPath:       ".",
+			GitSecretRef:      "",
+			RegistrySecretRef: "",
+		},
+		Ingress: config.IngressConfig{
+			HostTemplate: "*.localhost",
+			DefaultPath:  "/",
+		},
+	}
+}
+
 func TestIntegrationAppWorkflow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration tests in short mode")
@@ -37,7 +57,7 @@ func TestIntegrationAppWorkflow(t *testing.T) {
 	// Setup router
 	gin.SetMode(gin.TestMode)
 	gitClient := git.NewClient()
-	handler := api.NewHandler(db, gitClient, nil)
+	handler := api.NewHandler(db, gitClient, nil, testConfig())
 	
 	r := gin.New()
 	apiGroup := r.Group("/api")
@@ -270,7 +290,7 @@ func TestIntegrationAPIErrorHandling(t *testing.T) {
 	// Setup router
 	gin.SetMode(gin.TestMode)
 	gitClient := git.NewClient()
-	handler := api.NewHandler(db, gitClient, nil)
+	handler := api.NewHandler(db, gitClient, nil, testConfig())
 	
 	r := gin.New()
 	apiGroup := r.Group("/api")
@@ -331,7 +351,7 @@ func BenchmarkAppCreation(b *testing.B) {
 
 	gin.SetMode(gin.TestMode)
 	gitClient := git.NewClient()
-	handler := api.NewHandler(db, gitClient, nil)
+	handler := api.NewHandler(db, gitClient, nil, testConfig())
 	
 	r := gin.New()
 	r.POST("/api/apps", handler.CreateApp)

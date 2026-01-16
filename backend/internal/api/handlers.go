@@ -1496,8 +1496,16 @@ func (h *Handler) deleteHarborImage(app *models.App, imageTag string) error {
 	// First encode the slashes, then encode the whole string
 	doubleEncodedRepo := strings.ReplaceAll(repository, "/", "%2F")
 	doubleEncodedRepo = url.QueryEscape(doubleEncodedRepo)
-	harborURL := fmt.Sprintf("https://%s/api/v2.0/projects/%s/repositories/%s", 
-		h.config.Harbor.Endpoint, project, doubleEncodedRepo)
+
+	// Use URL if it contains a protocol, otherwise construct with https:// + Endpoint
+	var harborBaseURL string
+	if strings.HasPrefix(h.config.Harbor.URL, "http://") || strings.HasPrefix(h.config.Harbor.URL, "https://") {
+		harborBaseURL = h.config.Harbor.URL
+	} else {
+		harborBaseURL = fmt.Sprintf("https://%s", h.config.Harbor.Endpoint)
+	}
+	harborURL := fmt.Sprintf("%s/api/v2.0/projects/%s/repositories/%s",
+		harborBaseURL, project, doubleEncodedRepo)
 
 	// Create HTTP client with basic auth
 	req, err := http.NewRequest("DELETE", harborURL, nil)

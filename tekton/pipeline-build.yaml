@@ -85,6 +85,9 @@ spec:
             - "--cache=true"
             - "--cache-ttl=24h"
 
+    # NOTE: docker-compose builds require an external Docker host
+    # Set DOCKER_HOST_ADDRESS in your cluster to point to a Docker daemon
+    # Example: tcp://docker-host.your-namespace.svc:2375
     - name: build-push-docker-compose
       when:
         - input: "$(params.build-type)"
@@ -104,31 +107,89 @@ spec:
           - name: source
         steps:
           - name: build-and-push
-            image: docker/compose:latest
+            image: docker:latest
             workingDir: $(workspaces.source.path)/$(params.CONTEXT)
             env:
+              # Use external Docker host - deploy a docker:dind as a separate Deployment/Service
               - name: DOCKER_HOST
-                value: tcp://localhost:2375
+                value: tcp://docker-host.cicd-runners.svc.cluster.local:2375
             script: |
               #!/bin/sh
               set -e
-              
-              echo "Building with docker-compose..."
-              docker-compose -f $(params.COMPOSE_FILE) build
-              
-              echo "Pushing image $(params.IMAGE)..."
-              docker-compose -f $(params.COMPOSE_FILE) push
-              
+
+              echo "Checking Docker connection..."
+              if ! docker info > /dev/null 2>&1; then
+                echo "ERROR: Cannot connect to Docker daemon at $DOCKER_HOST"
+                echo "Please deploy a Docker host service in the cluster."
+                echo "See: kubectl apply -f tekton/docker-host.yaml"
+                exit 1
+              fi
+
+              echo "Docker connected successfully"
+              docker version
+
+              echo "Building with docker compose..."
+              docker compose -f $(params.COMPOSE_FILE) build
+
+              echo "Listing built images..."
+              docker images
+
+              # Get the target image name (registry/repo:tag)
+              TARGET_IMAGE="$(params.IMAGE)"
+              echo "Target image: $TARGET_IMAGE"
+
+              # Extract services from docker-compose and tag/push each
+              echo "Tagging and pushing built images to $TARGET_IMAGE..."
+
+              # Get list of services that were built
+              SERVICES=$(docker compose -f $(params.COMPOSE_FILE) config --services 2>/dev/null || echo "")
+
+              if [ -z "$SERVICES" ]; then
+                echo "No services found in compose file, trying to push directly..."
+                docker compose -f $(params.COMPOSE_FILE) push || true
+              else
+                # For multi-service compose, tag each built image and push
+                for SERVICE in $SERVICES; do
+                  # Get the image name for this service from compose config
+                  SERVICE_IMAGE=$(docker compose -f $(params.COMPOSE_FILE) config | grep -A 20 "^  $SERVICE:" | grep "image:" | head -1 | awk '{print $2}' || echo "")
+
+                  if [ -z "$SERVICE_IMAGE" ]; then
+                    # If no image defined, use project_service format
+                    PROJECT=$(basename $(pwd))
+                    SERVICE_IMAGE="${PROJECT}-${SERVICE}"
+                  fi
+
+                  echo "Processing service: $SERVICE (image: $SERVICE_IMAGE)"
+
+                  # Check if the image exists locally
+                  if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${SERVICE_IMAGE}"; then
+                    # Tag with target registry
+                    TAGGED_IMAGE="${TARGET_IMAGE}-${SERVICE}"
+                    echo "Tagging $SERVICE_IMAGE as $TAGGED_IMAGE"
+                    docker tag "$SERVICE_IMAGE" "$TAGGED_IMAGE" || docker tag "${SERVICE_IMAGE}:latest" "$TAGGED_IMAGE"
+
+                    echo "Pushing $TAGGED_IMAGE..."
+                    docker push "$TAGGED_IMAGE"
+                  else
+                    echo "Warning: Image $SERVICE_IMAGE not found locally, skipping..."
+                  fi
+                done
+
+                # Also try to create and push a combined/main image if there's a main service
+                # Tag the first service as the main image
+                FIRST_SERVICE=$(echo "$SERVICES" | head -1)
+                if [ -n "$FIRST_SERVICE" ]; then
+                  PROJECT=$(basename $(pwd))
+                  FIRST_IMAGE="${PROJECT}-${FIRST_SERVICE}"
+                  if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${FIRST_IMAGE}"; then
+                    echo "Tagging $FIRST_IMAGE as main image $TARGET_IMAGE"
+                    docker tag "$FIRST_IMAGE" "$TARGET_IMAGE" || docker tag "${FIRST_IMAGE}:latest" "$TARGET_IMAGE"
+                    docker push "$TARGET_IMAGE"
+                  fi
+                fi
+              fi
+
               echo "Build and push completed successfully"
-          
-          - name: docker-daemon
-            image: docker:dind
-            securityContext:
-              privileged: true
-            command:
-              - dockerd
-              - --host=tcp://127.0.0.1:2375
-              - --tls=false
       params:
         - name: IMAGE
           value: "$(params.image-repo):$(params.image-tag)"

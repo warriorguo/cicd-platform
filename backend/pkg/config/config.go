@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/spf13/viper"
 )
 
@@ -56,46 +58,50 @@ type IngressConfig struct {
 }
 
 func Load() (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath("..")  // Parent directory for when running from backend/
-	viper.AddConfigPath("/etc/cicd/")
+	v := viper.New()
 
-	viper.SetDefault("server.host", "0.0.0.0")
-	viper.SetDefault("server.port", "8080")
-	viper.SetDefault("database.user", "postgres")
-	viper.SetDefault("database.host", "localhost")
-	viper.SetDefault("database.dbname", "appdb")
-	viper.SetDefault("database.password", "pass")
-	viper.SetDefault("database.port", "5432")
-	viper.SetDefault("database.sslmode", "disable")
-	viper.SetDefault("k8s.in_cluster", false)
-	viper.SetDefault("k8s.pipeline_namespace", "cicd-runners")
-	viper.SetDefault("k8s.tekton_namespace", "tekton-pipelines")
-	viper.SetDefault("harbor.enabled", false)
-	viper.SetDefault("harbor.endpoint", "harbor.example.com")
-	viper.SetDefault("harbor.url", "harbor.example.com")
-	viper.SetDefault("harbor.project", "library")
-	viper.SetDefault("harbor.username", "admin")
-	viper.SetDefault("harbor.password", "")
-	viper.SetDefault("defaults.target_namespace", "default")
-	viper.SetDefault("defaults.context_path", ".")
-	viper.SetDefault("defaults.git_secret_ref", "")
-	viper.SetDefault("defaults.registry_secret_ref", "")
-	viper.SetDefault("ingress.host_template", "*.localhost")
-	viper.SetDefault("ingress.default_path", "/")
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("..")  // Parent directory for when running from backend/
+	v.AddConfigPath("/etc/cicd/")
 
-	viper.AutomaticEnv()
+	v.SetDefault("server.host", "0.0.0.0")
+	v.SetDefault("server.port", "8080")
+	v.SetDefault("database.user", "postgres")
+	v.SetDefault("database.host", "localhost")
+	v.SetDefault("database.dbname", "appdb")
+	v.SetDefault("database.password", "pass")
+	v.SetDefault("database.port", "5432")
+	v.SetDefault("database.sslmode", "disable")
+	v.SetDefault("k8s.in_cluster", false)
+	v.SetDefault("k8s.pipeline_namespace", "cicd-runners")
+	v.SetDefault("k8s.tekton_namespace", "tekton-pipelines")
+	v.SetDefault("harbor.enabled", false)
+	v.SetDefault("harbor.endpoint", "harbor.example.com")
+	v.SetDefault("harbor.url", "harbor.example.com")
+	v.SetDefault("harbor.project", "library")
+	v.SetDefault("harbor.username", "admin")
+	v.SetDefault("harbor.password", "")
+	v.SetDefault("defaults.target_namespace", "default")
+	v.SetDefault("defaults.context_path", ".")
+	v.SetDefault("defaults.git_secret_ref", "")
+	v.SetDefault("defaults.registry_secret_ref", "")
+	v.SetDefault("ingress.host_template", "*.localhost")
+	v.SetDefault("ingress.default_path", "/")
 
-	if err := viper.ReadInConfig(); err != nil {
+	// Enable environment variable overrides with underscore separator
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
 	}
 
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := v.Unmarshal(&config); err != nil {
 		return nil, err
 	}
 

@@ -80,11 +80,11 @@ func MockHarborServer() *httptest.Server {
 // TestDeleteHarborImage tests the Harbor image deletion functionality
 func TestDeleteHarborImage(t *testing.T) {
 	tests := []struct {
-		name         string
-		app          *models.App
-		imageTag     string
+		name          string
+		app           *models.App
+		imageTag      string
 		expectedError bool
-		description  string
+		description   string
 	}{
 		{
 			name: "Successful deletion",
@@ -97,39 +97,40 @@ func TestDeleteHarborImage(t *testing.T) {
 			description:   "Should successfully delete Harbor image",
 		},
 		{
-			name: "Invalid image tag format",
+			name: "Invalid registry repo format",
 			app: &models.App{
 				Name:         "testapp2",
-				RegistryRepo: "local-harbor.playquota.com/library/testapp2",
+				RegistryRepo: "invalid-format", // Less than 3 parts after splitting by /
 			},
 			imageTag:      "invalid-format",
 			expectedError: true,
-			description:   "Should fail with invalid image tag format",
+			description:   "Should fail with invalid registry repo format",
 		},
 		{
-			name: "Empty image tag",
+			name: "Empty registry repo with invalid image tag",
 			app: &models.App{
 				Name:         "testapp3",
-				RegistryRepo: "local-harbor.playquota.com/library/testapp3",
+				RegistryRepo: "", // Empty registry repo forces fallback to imageTag parsing
 			},
-			imageTag:      "",
+			imageTag:      "invalid", // Invalid format (no colon)
 			expectedError: true,
-			description:   "Should fail with empty image tag",
+			description:   "Should fail with invalid image tag format when registry repo is empty",
 		},
 	}
 	
 	// Start mock Harbor server
 	mockServer := MockHarborServer()
 	defer mockServer.Close()
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a mock config
+			// Use mockServer.URL for the URL field so the handler uses HTTP for the test
 			cfg := &config.Config{
 				Harbor: config.HarborConfig{
 					Enabled:  true,
-					Endpoint: mockServer.URL,
-					URL:      mockServer.URL,
+					Endpoint: strings.TrimPrefix(mockServer.URL, "http://"),
+					URL:      mockServer.URL, // This includes http:// so handler will use it directly
 					Project:  "library",
 					Username: "admin",
 					Password: "Harbor12345",

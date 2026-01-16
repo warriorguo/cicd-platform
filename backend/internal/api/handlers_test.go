@@ -16,6 +16,7 @@ import (
 
 	"github.com/warriorguo/cicd-platform/backend/internal/git"
 	"github.com/warriorguo/cicd-platform/backend/internal/models"
+	"github.com/warriorguo/cicd-platform/backend/pkg/config"
 )
 
 func setupTestDB() *gorm.DB {
@@ -32,12 +33,33 @@ func setupTestDB() *gorm.DB {
 	return db
 }
 
+func setupTestConfig() *config.Config {
+	return &config.Config{
+		Harbor: config.HarborConfig{
+			Enabled:  false,
+			Endpoint: "harbor.test.com",
+			Project:  "library",
+		},
+		Defaults: config.DefaultsConfig{
+			TargetNamespace:   "default",
+			ContextPath:       ".",
+			GitSecretRef:      "",
+			RegistrySecretRef: "",
+		},
+		Ingress: config.IngressConfig{
+			HostTemplate: "*.localhost",
+			DefaultPath:  "/",
+		},
+	}
+}
+
 func setupTestRouter(db *gorm.DB) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	
+
 	gitClient := git.NewClient()
-	handler := NewHandler(db, gitClient, nil) // k8sClient is nil for tests
-	
+	cfg := setupTestConfig()
+	handler := NewHandler(db, gitClient, nil, cfg) // k8sClient is nil for tests
+
 	r := gin.New()
 	api := r.Group("/api")
 	{
@@ -51,7 +73,7 @@ func setupTestRouter(db *gorm.DB) *gin.Engine {
 		api.GET("/releases/:id", handler.GetRelease)
 		api.POST("/releases/:id/rollback", handler.RollbackRelease)
 	}
-	
+
 	return r
 }
 

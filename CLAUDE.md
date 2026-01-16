@@ -4,146 +4,116 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Kubernetes-native CI/CD platform that provides automatic Docker builds using Tekton Pipelines. The platform consists of:
-
-- **Frontend**: React application with Ant Design components
-- **Backend**: Go REST API server using Gin framework  
-- **Database**: PostgreSQL for metadata storage
-- **Pipeline Engine**: Tekton Pipelines for Kubernetes-native builds
-- **Build System**: Kaniko for rootless container builds
+A Kubernetes-native CI/CD platform for automatic Docker builds using Tekton Pipelines. Users create "Apps" (linked to Git repos), trigger "Releases" (builds), and deploy built images to Kubernetes.
 
 ## Development Commands
 
-### Local Development
-
-#### Docker-based Development
+### Local Development (Non-Docker)
 ```bash
-# Start full development environment with Docker Compose
-make dev
-
-# Stop development environment
-make dev-down
-
-# Clean development environment (removes volumes)
-make dev-clean
+make dev-local            # Start PostgreSQL and wait for ready
+make dev-local-backend    # Terminal 1: Go backend on :8080
+make dev-local-frontend   # Terminal 2: React frontend on :3000
 ```
 
-#### Non-Docker Local Development
+### Docker-based Development
 ```bash
-# Start only PostgreSQL database and wait for it to be ready
-make dev-local
-
-# Then in separate terminals:
-make dev-local-backend    # Start Go backend on :8080
-make dev-local-frontend   # Start React frontend on :3000
-
-# Stop/clean database
-make dev-local-stop      # Stop database
-make dev-local-clean     # Clean database (removes data)
-
-# Helper commands
-make install-deps        # Install Go and npm dependencies
-make go-deps            # Download Go dependencies only
-make npm-install        # Install npm dependencies only
+make dev                  # Start full environment (postgres + backend + frontend)
+make dev-down             # Stop
+make dev-clean            # Stop and remove volumes
 ```
 
 ### Testing
 ```bash
-# Run all backend tests
-make test-backend
-# or: cd backend && go test ./...
+make test-backend                     # Run all Go tests
+cd backend && go test ./internal/api  # Run specific package tests
+cd backend && go test -run TestCreateApp ./internal/api  # Single test
 
-# Run frontend tests
-make test-frontend
-# or: cd frontend && npm test
-
-# Run frontend tests with coverage
-cd frontend && npm run test:coverage
+make test-frontend                    # Run React tests
+cd frontend && npm test -- --watch    # Watch mode
+cd frontend && npm run test:coverage  # With coverage
 ```
 
 ### Linting
 ```bash
-# Lint backend code
-make lint-backend
-# This runs: cd backend && go vet ./... && golangci-lint run
-
-# Lint frontend code  
-make lint-frontend
-# This runs: cd frontend && npm run lint
+make lint-backend         # go vet + golangci-lint
+make lint-frontend        # npm run lint
 ```
 
 ### Building
 ```bash
-# Build container images
-make build
-
-# Build and push to registry
-make build-push REGISTRY=your-registry.com TAG=v1.0.0
+make build                # Build container images locally
+cd backend && go build -o bin/cicd-platform cmd/main.go  # Build Go binary
 ```
 
 ## Architecture
 
-### Backend Structure
-- `cmd/main.go`: Application entry point
-- `internal/api/`: REST API handlers, routes, and WebSocket endpoints
-- `internal/db/`: Database connection and migrations
-- `internal/git/`: Git client for repository operations
-- `internal/k8s/`: Kubernetes client for Tekton pipeline management
-- `internal/models/`: Data models and GORM entities
-- `pkg/config/`: Configuration management using Viper
+### Data Flow
+1. **App Creation**: User creates App with Git URL → stored in PostgreSQL
+2. **Release (Build)**: User triggers build → Backend creates Tekton PipelineRun → Kaniko builds image → Pushed to Harbor
+3. **Deploy**: User deploys successful release → Backend creates Deploy PipelineRun → Updates Kubernetes Deployment + creates Ingress
 
-### Frontend Structure
-- `src/pages/`: Main application pages (AppsList, CreateApp, AppDetails, ReleaseDetails)
-- `src/components/`: Reusable React components
-- `src/services/api.js`: Axios-based API client
-- React Router for navigation, Ant Design for UI components
+### Backend (`backend/`)
+```
+cmd/main.go              # Entry point, initializes Handler with DB + K8s client
+internal/
+  api/
+    routes.go            # All REST endpoints defined here
+    handlers.go          # Core business logic: CreateApp, CreateRelease, DeployRelease
+    websocket.go         # Real-time log streaming via WebSocket/SSE
+  models/app.go          # GORM models: App, Release, BuildLog (with status enums)
+  k8s/
+    client.go            # Kubernetes client wrapper
+    pipeline.go          # Tekton PipelineRun creation for build/deploy
+  git/client.go          # Git API client (GitHub/GitLab/Gitea branch listing)
+  db/db.go               # Database connection + auto-migration
+pkg/config/config.go     # Viper-based config with env var overrides
+```
 
-### Key Integration Points
-- Backend serves REST API on port 8080
-- Frontend proxies API requests to backend via `proxy: "http://localhost:8080"` in package.json
-- WebSocket endpoints for real-time build log streaming
-- Tekton Pipelines execute in `cicd-runners` namespace
-- Database models use GORM with PostgreSQL driver
+### Frontend (`frontend/src/`)
+```
+services/api.js          # All API calls (appsAPI object)
+pages/
+  AppDetails.js          # App view with releases list, deployment info
+  BuildDetails.js        # Build progress with stage tracking
+  DeployDetails.js       # Deployment status and pod management
+  CreateApp.js           # App creation form
+```
+
+### Release Status Flow
+`pending` → `running` (build) → `success` (build done) → `deploying` → `deployed`
+
+### Key API Endpoints
+- `POST /api/apps` - Create app
+- `POST /api/apps/:id/releases` - Trigger build
+- `POST /api/releases/:id/deploy` - Deploy release
+- `GET /api/releases/:id/stream` - WebSocket for live logs
+- `POST /api/apps/:id/scale` - Scale deployment replicas
+- `GET /api/apps/:id/pods/:podName/logs` - Pod logs
+- `GET /api/apps/:id/pods/:podName/tty` - WebSocket TTY to pod
+
+### Tekton Pipelines (`tekton/`)
+- `pipeline-build.yaml`: Git clone → Kaniko build → Push to registry
+- `pipeline-deploy.yaml`: Create/update Deployment + Service + Ingress
 
 ## Configuration
 
-The application uses a layered configuration system:
-1. `config.yaml`: Default configuration values
-2. Environment variables override config file values
-3. Backend config structure defined in `pkg/config/config.go`
+Config loaded from `config.yaml` with env var overrides via Viper.
 
-Key environment variables:
-- `DATABASE_*`: Database connection parameters
-- `K8S_IN_CLUSTER`: Whether running inside Kubernetes
-- `K8S_PIPELINE_NAMESPACE`: Namespace for Tekton pipelines
+Key settings in `pkg/config/config.go`:
+- `harbor.*`: Registry endpoint, credentials, project name
+- `k8s.pipeline_namespace`: Where PipelineRuns execute (default: `cicd-runners`)
+- `defaults.target_namespace`: Where apps deploy (default: `default`)
+- `ingress.host_template`: Pattern like `*.localhost` for app Ingress hosts
 
-## Deployment
+## Database
 
-### Kubernetes Deployment
-```bash
-# Deploy to Kubernetes (requires cluster access)
-make deploy-k8s
+PostgreSQL with GORM auto-migration. Key tables:
+- `apps`: Application definitions
+- `releases`: Build/deploy history with status tracking
+- `build_logs`: Per-stage logs with container-level granularity
 
-# Setup Tekton Pipelines first
-make setup-tekton
+## Testing Notes
 
-# Create required secrets
-make setup-git-secret
-make setup-registry-secret
-```
-
-### Development Environment
-Uses docker-compose.yml with PostgreSQL database and both frontend/backend services.
-
-## Testing Strategy
-
-- Backend: Go standard testing with testify assertions
-- Frontend: React Testing Library with Jest
-- Integration tests in `backend/test/` and system tests in `test/`
-- Frontend coverage threshold set to 70% for branches, functions, lines, statements
-
-## Key Files for Understanding
-- `backend/internal/api/handlers.go`: Core API logic
-- `frontend/src/services/api.js`: Frontend-backend communication
-- `tekton/pipeline.yaml`: Build pipeline definition
-- `deployments/`: Kubernetes manifests for production deployment
+- Backend tests use `testify/assert`
+- Frontend tests use React Testing Library + Jest
+- Integration tests in `backend/test/` require running database
