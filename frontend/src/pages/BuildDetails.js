@@ -325,11 +325,6 @@ const BuildDetails = () => {
             message="Build Successful"
             description="The container image has been successfully built and pushed to the registry. You can now deploy this release."
             showIcon
-            action={
-              <Button type="primary" onClick={handleDeploy}>
-                Deploy Now
-              </Button>
-            }
             style={{ marginTop: 16 }}
           />
         )}
