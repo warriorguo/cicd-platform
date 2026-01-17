@@ -356,6 +356,14 @@ func (c *Client) CreateDeployPipelineRun(ctx context.Context, req *DeployPipelin
 		})
 	}
 
+	// Add service account if specified
+	if req.ServiceAccount != "" {
+		params = append(params, map[string]interface{}{
+			"name":  "service-account",
+			"value": req.ServiceAccount,
+		})
+	}
+
 	// Create PipelineRun unstructured object
 	pipelineRun := &unstructured.Unstructured{
 		Object: map[string]interface{}{

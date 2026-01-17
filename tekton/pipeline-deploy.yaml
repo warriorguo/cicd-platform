@@ -29,6 +29,10 @@ spec:
       type: string
       description: Container and service port
       default: "8080"
+    - name: service-account
+      type: string
+      description: Optional ServiceAccount for the deployment (leave empty for default)
+      default: ""
 
   tasks:
     - name: update-deployment
@@ -46,6 +50,8 @@ spec:
             type: string
           - name: SERVICE_PORT
             type: string
+          - name: SERVICE_ACCOUNT
+            type: string
         steps:
           - name: update
             image: bitnami/kubectl:latest
@@ -55,25 +61,38 @@ spec:
 
               echo "Creating or updating deployment $(params.DEPLOYMENT_NAME) in namespace $(params.NAMESPACE)"
 
+              # Build serviceAccountName line if provided
+              SA_SPEC=""
+              if [ -n "$(params.SERVICE_ACCOUNT)" ]; then
+                SA_SPEC="serviceAccountName: $(params.SERVICE_ACCOUNT)"
+              fi
+
               # Check if deployment exists
               if kubectl get deployment $(params.DEPLOYMENT_NAME) -n $(params.NAMESPACE) >/dev/null 2>&1; then
                 echo "Deployment exists, updating..."
-                
+
                 # Update image
                 kubectl set image deployment/$(params.DEPLOYMENT_NAME) \
                   *=$(params.IMAGE) \
                   -n $(params.NAMESPACE)
-                
+
                 # Scale deployment to desired replicas
                 echo "Scaling deployment to $(params.REPLICAS) replicas..."
                 kubectl scale deployment/$(params.DEPLOYMENT_NAME) \
                   --replicas=$(params.REPLICAS) \
                   -n $(params.NAMESPACE)
+
+                # Update service account if specified
+                if [ -n "$(params.SERVICE_ACCOUNT)" ]; then
+                  echo "Updating service account to $(params.SERVICE_ACCOUNT)..."
+                  kubectl patch deployment $(params.DEPLOYMENT_NAME) -n $(params.NAMESPACE) \
+                    -p '{"spec":{"template":{"spec":{"serviceAccountName":"$(params.SERVICE_ACCOUNT)"}}}}'
+                fi
               else
                 echo "Deployment does not exist, creating..."
-                
+
                 # Create deployment using kubectl apply with YAML
-                cat <<EOF | kubectl apply -f -
+                cat <<EOFYAML | kubectl apply -f -
               apiVersion: apps/v1
               kind: Deployment
               metadata:
@@ -92,6 +111,7 @@ spec:
                     labels:
                       app: $(params.DEPLOYMENT_NAME)
                   spec:
+                    $SA_SPEC
                     containers:
                     - name: $(params.DEPLOYMENT_NAME)
                       image: $(params.IMAGE)
@@ -120,8 +140,8 @@ spec:
                   targetPort: $(params.SERVICE_PORT)
                   protocol: TCP
                 type: ClusterIP
-              EOF
-                
+              EOFYAML
+
                 echo "Created deployment and service for $(params.DEPLOYMENT_NAME)"
               fi
 
@@ -151,3 +171,5 @@ spec:
           value: $(params.env-vars)
         - name: SERVICE_PORT
           value: $(params.service-port)
+        - name: SERVICE_ACCOUNT
+          value: $(params.service-account)

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Form, Input, InputNumber, Button, Card, message, Space, Select } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Form, Input, InputNumber, Button, Card, message, Space, Select, Collapse } from 'antd';
+import { ArrowLeftOutlined, SettingOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { appsAPI } from '../services/api';
 
@@ -119,13 +119,56 @@ const CreateApp = () => {
               { type: 'number', min: 1, max: 65535, message: 'Port must be between 1 and 65535' },
             ]}
           >
-            <InputNumber 
-              placeholder="8080" 
+            <InputNumber
+              placeholder="8080"
               style={{ width: '100%' }}
               min={1}
               max={65535}
             />
           </Form.Item>
+
+          <Collapse
+            ghost
+            style={{ marginBottom: 24 }}
+            items={[
+              {
+                key: 'advanced',
+                label: (
+                  <Space>
+                    <SettingOutlined />
+                    Advanced Options
+                  </Space>
+                ),
+                children: (
+                  <>
+                    <Form.Item
+                      label="Service Account"
+                      name="service_account"
+                      tooltip="Kubernetes ServiceAccount for the deployment. Leave empty to use default. Required for apps that need to interact with Kubernetes API."
+                    >
+                      <Input placeholder="e.g., cicd-platform (leave empty for default)" />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Git Secret Reference"
+                      name="git_secret_ref"
+                      tooltip="Name of Kubernetes secret containing Git credentials for private repositories"
+                    >
+                      <Input placeholder="e.g., git-credentials" />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Registry Secret Reference"
+                      name="registry_secret_ref"
+                      tooltip="Name of Kubernetes secret containing registry credentials for pushing images"
+                    >
+                      <Input placeholder="e.g., registry-credentials" />
+                    </Form.Item>
+                  </>
+                ),
+              },
+            ]}
+          />
 
           <Form.Item>
             <Space>

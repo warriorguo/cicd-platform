@@ -60,6 +60,7 @@ type App struct {
 	ServicePort      int       `json:"service_port" gorm:"default:8080"` // Service port for Ingress
 	IngressEnabled   bool      `json:"ingress_enabled" gorm:"default:true"` // Whether to create Ingress
 	IngressHost      string    `json:"ingress_host"`     // Optional custom host
+	ServiceAccount   string    `json:"service_account"`  // Optional ServiceAccount for the deployment
 	EnvVars          EnvVars   `json:"env_vars" gorm:"type:jsonb"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`

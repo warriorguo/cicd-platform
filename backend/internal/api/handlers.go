@@ -737,7 +737,8 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			Replicas:         replicas,
 			EnvVars:          envVars,
 			MaxUnavailable:   maxUnavailable,
-			ServicePort:      release.App.ServicePort, // Use app's configured service port
+			ServicePort:      release.App.ServicePort,    // Use app's configured service port
+			ServiceAccount:   release.App.ServiceAccount, // Use app's configured service account
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
