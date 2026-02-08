@@ -42,6 +42,7 @@ export const appsAPI = {
   getAppBranches: (id) => api.get(`/apps/${id}/branches`),
   getAppDeployments: (id) => api.get(`/apps/${id}/deployments`),
   scaleDeployment: (id, data) => api.post(`/apps/${id}/scale`, data),
+  reloadApp: (id, data) => api.post(`/apps/${id}/reload`, data),
   getPodLogs: (appId, podName, container) => {
     const params = container ? `?container=${container}` : '';
     return api.get(`/apps/${appId}/pods/${podName}/logs${params}`);

@@ -1235,6 +1235,131 @@ func (h *Handler) ScaleDeployment(c *gin.Context) {
 	})
 }
 
+// ReloadApp restarts all pods using the same image as the current deployment
+func (h *Handler) ReloadApp(c *gin.Context) {
+	appID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid app ID"})
+		return
+	}
+
+	var req struct {
+		EnvVars        []models.EnvVar `json:"env_vars"`
+		MaxUnavailable int             `json:"maxUnavailable"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	var app models.App
+	if err := h.db.First(&app, appID).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Application not found"})
+		return
+	}
+
+	// Find the last deployed release
+	var deployedRelease models.Release
+	if err := h.db.Where("app_id = ? AND status = ?", appID, models.StatusDeployed).
+		Order("created_at DESC").
+		First(&deployedRelease).Error; err != nil {
+		c.JSON(400, gin.H{"error": "No deployed release found to reload"})
+		return
+	}
+
+	// Save env vars to the app if provided
+	if len(req.EnvVars) > 0 {
+		app.EnvVars = req.EnvVars
+		if err := h.db.Save(&app).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save environment variables"})
+			return
+		}
+	}
+
+	// Get current replica count from K8s
+	replicas := 1
+	if h.k8sClient != nil {
+		if desired, _, err := h.k8sClient.GetDeploymentReplicas(c.Request.Context(), app.TargetNamespace, app.TargetDeployName); err == nil {
+			replicas = int(desired)
+		}
+	}
+
+	// Check if there's already a deployment running for this app
+	var runningDeployCount int64
+	h.db.Model(&models.Release{}).Where("app_id = ? AND status = ?", appID, models.StatusDeploying).Count(&runningDeployCount)
+	if runningDeployCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "Another deployment is already running for this app"})
+		return
+	}
+
+	// Create a new Release record with status deploying, reusing the same image tag
+	release := models.Release{
+		AppID:     app.ID,
+		Branch:    deployedRelease.Branch,
+		CommitSHA: deployedRelease.CommitSHA,
+		ImageTag:  deployedRelease.ImageTag,
+		Status:    models.StatusDeploying,
+	}
+
+	if err := h.db.Create(&release).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create release"})
+		return
+	}
+
+	// Create Tekton Deploy PipelineRun
+	if h.k8sClient != nil {
+		maxUnavailable := req.MaxUnavailable
+		if maxUnavailable == 0 {
+			maxUnavailable = 25
+		}
+
+		envVars := req.EnvVars
+		if len(envVars) == 0 {
+			envVars = app.EnvVars
+		}
+
+		deployReq := &k8s.DeployPipelineRunRequest{
+			AppName:          app.Name,
+			ImageRepo:        app.RegistryRepo,
+			ImageTag:         release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:],
+			TargetNamespace:  app.TargetNamespace,
+			TargetDeployName: app.TargetDeployName,
+			Replicas:         replicas,
+			EnvVars:          envVars,
+			MaxUnavailable:   maxUnavailable,
+			ServicePort:      app.ServicePort,
+			ServiceAccount:   app.ServiceAccount,
+		}
+
+		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
+		if err != nil {
+			release.Status = models.StatusFailed
+			h.db.Save(&release)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create Deploy PipelineRun: %v", err)})
+			return
+		}
+
+		release.K8sRef = fmt.Sprintf("deploy:%s", pipelineRunName)
+		h.db.Save(&release)
+
+		go h.watchDeployPipelineRun(release.ID, pipelineRunName)
+	} else {
+		// Fallback: simulate deployment for development
+		go func() {
+			time.Sleep(10 * time.Second)
+			now := time.Now()
+			release.Status = models.StatusDeployed
+			release.FinishedAt = &now
+			h.db.Save(&release)
+		}()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Reload initiated",
+		"release": release,
+	})
+}
+
 // GetPodLogs gets logs for a specific pod
 func (h *Handler) GetPodLogs(c *gin.Context) {
 	appID, err := strconv.Atoi(c.Param("id"))

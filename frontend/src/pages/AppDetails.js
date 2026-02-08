@@ -74,6 +74,10 @@ const AppDetails = ({ onAppDeleted }) => {
   const [loadingDescribe, setLoadingDescribe] = useState(false);
   const [ingressInfo, setIngressInfo] = useState(null);
   const [loadingIngress, setLoadingIngress] = useState(false);
+  const [reloadModalVisible, setReloadModalVisible] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [reloadForm] = Form.useForm();
+  const [selectedReloadDeployment, setSelectedReloadDeployment] = useState(null);
 
   // Helper function to clean ANSI escape sequences
   const cleanAnsiEscapes = (text) => {
@@ -233,6 +237,36 @@ const AppDetails = ({ onAppDeleted }) => {
       replicas: deployment.replicas?.desired || 1
     });
     setScaleModalVisible(true);
+  };
+
+  const showReloadModal = (deployment) => {
+    setSelectedReloadDeployment(deployment);
+    reloadForm.setFieldsValue({
+      maxUnavailable: 25,
+      env_vars: app?.env_vars || []
+    });
+    setReloadModalVisible(true);
+  };
+
+  const handleReloadModalOk = async () => {
+    try {
+      const values = await reloadForm.validateFields();
+      setReloading(true);
+
+      const response = await appsAPI.reloadApp(id, values);
+      message.success('Reload initiated');
+      setReloadModalVisible(false);
+      fetchDeployments();
+      fetchReleases();
+      navigate(`/releases/${response.data.release.id}/deploy`);
+    } catch (error) {
+      if (error.errorFields) {
+        return;
+      }
+      message.error(error.response?.data?.error || 'Failed to reload deployment');
+    } finally {
+      setReloading(false);
+    }
   };
 
   const handleScaleModalOk = async () => {
@@ -739,9 +773,16 @@ const AppDetails = ({ onAppDeleted }) => {
                       </div>
                     </div>
                     <Space size="middle">
-                      <Button 
-                        type="primary" 
-                        icon={<SettingOutlined />} 
+                      <Button
+                        icon={<ReloadOutlined />}
+                        size="small"
+                        onClick={() => showReloadModal(deployment)}
+                      >
+                        Reload
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<SettingOutlined />}
                         size="small"
                         onClick={() => showScaleModal(deployment)}
                       >
@@ -987,6 +1028,108 @@ const AppDetails = ({ onAppDeleted }) => {
               min={1} 
               max={100} 
               style={{ width: '100%' }} 
+              formatter={value => `${value}%`}
+              parser={value => value.replace('%', '')}
+              placeholder="25"
+            />
+          </Form.Item>
+
+          <Form.Item
+            label="Environment Variables"
+            help="Configure runtime environment variables for the deployment"
+          >
+            <Form.List name="env_vars">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <Space
+                      key={key}
+                      style={{
+                        display: 'flex',
+                        marginBottom: 8,
+                        alignItems: 'flex-start',
+                      }}
+                      align="baseline"
+                    >
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'name']}
+                        rules={[
+                          { required: true, message: 'Missing variable name' },
+                          { pattern: /^[A-Z_][A-Z0-9_]*$/i, message: 'Invalid variable name' }
+                        ]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Name" />
+                      </Form.Item>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'value']}
+                        rules={[{ required: true, message: 'Missing variable value' }]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Value" />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(name)}
+                        danger
+                        size="small"
+                      />
+                    </Space>
+                  ))}
+                  <Form.Item>
+                    <Button
+                      type="dashed"
+                      onClick={() => add()}
+                      block
+                      icon={<PlusOutlined />}
+                    >
+                      Add Environment Variable
+                    </Button>
+                  </Form.Item>
+                </>
+              )}
+            </Form.List>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Reload Configuration Modal */}
+      <Modal
+        title={
+          <Space>
+            <ReloadOutlined />
+            Reload Pods - {selectedReloadDeployment?.deployment_name}
+          </Space>
+        }
+        visible={reloadModalVisible}
+        onOk={handleReloadModalOk}
+        onCancel={() => setReloadModalVisible(false)}
+        width={600}
+        okText="Reload"
+        cancelText="Cancel"
+        confirmLoading={reloading}
+      >
+        <Form
+          form={reloadForm}
+          layout="vertical"
+          initialValues={{
+            maxUnavailable: 25,
+            env_vars: []
+          }}
+        >
+          <Form.Item
+            label="Rolling Update Strategy"
+            name="maxUnavailable"
+            rules={[{ required: true, message: 'Please enter rolling update percentage' }]}
+            help="Maximum percentage of pods that can be unavailable during the restart (default: 25%)"
+          >
+            <InputNumber
+              min={1}
+              max={100}
+              style={{ width: '100%' }}
               formatter={value => `${value}%`}
               parser={value => value.replace('%', '')}
               placeholder="25"

@@ -31,6 +31,7 @@ func SetupRoutes(handler *Handler) *gin.Engine {
 		api.GET("/apps/:id/branches", handler.GetAppBranches)
 		api.GET("/apps/:id/deployments", handler.GetAppDeployments)
 		api.POST("/apps/:id/scale", handler.ScaleDeployment)
+		api.POST("/apps/:id/reload", handler.ReloadApp)
 		api.GET("/apps/:id/pods/:podName/logs", handler.GetPodLogs)
 		api.GET("/apps/:id/pods/:podName/tty", handler.GetPodTTY)
 		api.GET("/apps/:id/pods/:podName/describe", handler.GetPodDescribe)
