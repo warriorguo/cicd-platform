@@ -42,6 +42,9 @@ func main() {
 	// Initialize handlers
 	handler := api.NewHandler(database, gitClient, k8sClient, cfg)
 
+	// Reconcile any releases left in deploying/running state from before restart
+	handler.ReconcileStaleReleases()
+
 	// Setup routes
 	router := api.SetupRoutes(handler)
 

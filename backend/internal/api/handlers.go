@@ -39,6 +39,133 @@ func NewHandler(db *gorm.DB, gitClient *git.Client, k8sClient *k8s.Client, cfg *
 	}
 }
 
+// ReconcileStaleReleases checks for releases stuck in 'deploying' or 'running' status
+// and reconciles them against the actual PipelineRun state in Kubernetes.
+// This handles the case where the watcher goroutine dies during a rolling update.
+func (h *Handler) ReconcileStaleReleases() {
+	if h.k8sClient == nil {
+		log.Println("ReconcileStaleReleases: skipping (no K8s client)")
+		return
+	}
+
+	var staleReleases []models.Release
+	if err := h.db.Preload("App").Where("status IN ?", []models.ReleaseStatus{models.StatusDeploying, models.StatusRunning}).Find(&staleReleases).Error; err != nil {
+		log.Printf("ReconcileStaleReleases: failed to query stale releases: %v", err)
+		return
+	}
+
+	if len(staleReleases) == 0 {
+		log.Println("ReconcileStaleReleases: no stale releases found")
+		return
+	}
+
+	log.Printf("ReconcileStaleReleases: found %d stale release(s)", len(staleReleases))
+	ctx := context.Background()
+
+	for _, release := range staleReleases {
+		var pipelineRunName string
+
+		if release.Status == models.StatusDeploying {
+			// K8sRef format: "build-ref,deploy:deploy-ref" or "deploy:deploy-ref"
+			parts := strings.Split(release.K8sRef, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if strings.HasPrefix(parts[i], "deploy:") {
+					pipelineRunName = strings.TrimPrefix(parts[i], "deploy:")
+					break
+				}
+			}
+		} else {
+			// running: K8sRef is the build pipeline run name directly
+			pipelineRunName = release.K8sRef
+		}
+
+		if pipelineRunName == "" {
+			log.Printf("ReconcileStaleReleases: release %d has no extractable PipelineRun name (K8sRef=%q), marking as failed", release.ID, release.K8sRef)
+			release.Status = models.StatusFailed
+			now := time.Now()
+			release.FinishedAt = &now
+			h.db.Save(&release)
+			continue
+		}
+
+		pipelineStatus, err := h.k8sClient.GetPipelineRunStatus(ctx, pipelineRunName)
+		if err != nil {
+			// PipelineRun not found or GC'd — mark as failed
+			log.Printf("ReconcileStaleReleases: release %d PipelineRun %q not found (%v), marking as failed", release.ID, pipelineRunName, err)
+			release.Status = models.StatusFailed
+			now := time.Now()
+			release.FinishedAt = &now
+			h.db.Save(&release)
+			continue
+		}
+
+		log.Printf("ReconcileStaleReleases: release %d (was %s) PipelineRun %q status: %s", release.ID, release.Status, pipelineRunName, pipelineStatus)
+
+		switch pipelineStatus {
+		case "Success":
+			now := time.Now()
+			if release.Status == models.StatusDeploying {
+				release.Status = models.StatusDeployed
+				release.FinishedAt = &now
+
+				// Create or update Ingress (same logic as watchDeployPipelineRun)
+				if release.App.IngressEnabled {
+					serviceName := release.App.ServiceName
+					if serviceName == "" {
+						serviceName = release.App.TargetDeployName
+					}
+					ingressConfig := &k8s.IngressConfig{
+						Namespace:    release.App.TargetNamespace,
+						AppName:      release.App.Name,
+						ServiceName:  serviceName,
+						ServicePort:  release.App.ServicePort,
+						CommitSHA:    release.CommitSHA,
+						Host:         release.App.IngressHost,
+						Path:         h.config.Ingress.DefaultPath,
+						HostTemplate: h.config.Ingress.HostTemplate,
+					}
+					if err := h.k8sClient.CreateOrUpdateIngress(ctx, ingressConfig); err != nil {
+						log.Printf("ReconcileStaleReleases: failed to create/update Ingress for app %s: %v", release.App.Name, err)
+					} else {
+						release.IngressCreated = true
+						release.IngressPath = h.config.Ingress.DefaultPath
+						if release.App.IngressHost != "" {
+							release.IngressHost = release.App.IngressHost
+						} else {
+							release.IngressHost = strings.Replace(h.config.Ingress.HostTemplate, "*", release.App.Name, 1)
+						}
+						log.Printf("ReconcileStaleReleases: created/updated Ingress for app %s", release.App.Name)
+					}
+				}
+			} else {
+				// was running (build)
+				release.Status = models.StatusSuccess
+				release.FinishedAt = &now
+				release.ImageDigest = "sha256:" + uuid.New().String()
+			}
+			h.db.Save(&release)
+
+		case "Failed":
+			release.Status = models.StatusFailed
+			now := time.Now()
+			release.FinishedAt = &now
+			h.db.Save(&release)
+
+		case "Running", "Pending":
+			// Still in progress — re-launch the watcher
+			if release.Status == models.StatusDeploying {
+				log.Printf("ReconcileStaleReleases: re-launching deploy watcher for release %d, pipeline %s", release.ID, pipelineRunName)
+				go h.watchDeployPipelineRun(release.ID, pipelineRunName)
+			} else {
+				log.Printf("ReconcileStaleReleases: re-launching build watcher for release %d, pipeline %s", release.ID, pipelineRunName)
+				go h.watchBuildPipelineRun(release.ID, pipelineRunName)
+			}
+		}
+	}
+
+	log.Println("ReconcileStaleReleases: reconciliation complete")
+}
+
 func (h *Handler) CreateApp(c *gin.Context) {
 	var req struct {
 		Name           string           `json:"name" binding:"required"`
