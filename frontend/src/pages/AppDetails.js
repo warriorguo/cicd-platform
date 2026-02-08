@@ -539,7 +539,11 @@ const AppDetails = ({ onAppDeleted }) => {
         const isBuilding = record.status === 'pending' || record.status === 'running';
         const canDeploy = record.status === 'success';
         const isDeployed = record.status === 'deployed' || record.status === 'deploying';
-        
+
+        // Find the currently deployed release ID
+        const deployedRelease = releases.find(r => r.status === 'deployed');
+        const deployedId = deployedRelease?.id;
+
         return (
           <Space size="middle">
             {isBuilding && (
@@ -551,13 +555,13 @@ const AppDetails = ({ onAppDeleted }) => {
             )}
             {canDeploy && (
               <>
-                <Button 
-                  type="link" 
-                  icon={<PlayCircleOutlined />} 
+                <Button
+                  type="link"
+                  icon={<PlayCircleOutlined />}
                   size="small"
                   onClick={() => showDeployModal(record.id)}
                 >
-                  Upgrade
+                  {deployedId ? (record.id > deployedId ? 'Upgrade' : 'Downgrade') : 'Deploy'}
                 </Button>
                 <Link to={`/releases/${record.id}/build`}>
                   <Button type="link" icon={<EyeOutlined />} size="small">
