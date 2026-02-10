@@ -144,12 +144,14 @@ func (h *Handler) ReconcileStaleReleases() {
 				release.ImageDigest = "sha256:" + uuid.New().String()
 			}
 			h.db.Save(&release)
+			go h.cleanupPipelineRun(pipelineRunName)
 
 		case "Failed":
 			release.Status = models.StatusFailed
 			now := time.Now()
 			release.FinishedAt = &now
 			h.db.Save(&release)
+			go h.cleanupPipelineRun(pipelineRunName)
 
 		case "Running", "Pending":
 			// Still in progress — re-launch the watcher
@@ -475,6 +477,18 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 	c.JSON(http.StatusCreated, release)
 }
 
+// cleanupPipelineRun deletes a finished PipelineRun after a short delay.
+// Kubernetes GCs the owned pods via ownerReferences. Fire-and-forget.
+func (h *Handler) cleanupPipelineRun(pipelineRunName string) {
+	time.Sleep(30 * time.Second)
+	ctx := context.Background()
+	if err := h.k8sClient.DeletePipelineRun(ctx, pipelineRunName); err != nil {
+		log.Printf("Failed to cleanup PipelineRun %s: %v", pipelineRunName, err)
+	} else {
+		log.Printf("Cleaned up PipelineRun %s", pipelineRunName)
+	}
+}
+
 // watchBuildPipelineRun watches a Build PipelineRun and updates the release status with detailed stage tracking
 func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) {
 	fmt.Printf("DEBUG: watchBuildPipelineRun started for release %d, pipeline: %s\n", releaseID, pipelineRunName)
@@ -513,6 +527,7 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 				release.FinishedAt = &now
 				h.db.Save(&release)
 			}
+			go h.cleanupPipelineRun(pipelineRunName)
 			return
 
 		case <-ticker.C:
@@ -581,13 +596,14 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 				// TODO: Get actual image digest from PipelineRun
 				release.ImageDigest = "sha256:" + uuid.New().String()
 				h.db.Save(&release)
+				go h.cleanupPipelineRun(pipelineRunName)
 				return
 
 			case "Failed":
 				release.Status = models.StatusFailed
 				release.FinishedAt = &now
 				h.db.Save(&release)
-				
+
 				// Final attempt to capture logs for all TaskRuns when pipeline fails
 				allTaskRuns, err := h.k8sClient.GetTaskRunsForPipelineRun(ctx, pipelineRunName)
 				if err == nil {
@@ -596,7 +612,8 @@ func (h *Handler) watchBuildPipelineRun(releaseID uint, pipelineRunName string) 
 						h.captureBuildLogs(releaseID, &taskRun)
 					}
 				}
-				
+
+				go h.cleanupPipelineRun(pipelineRunName)
 				return
 			}
 		}
@@ -919,6 +936,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 				release.FinishedAt = &now
 				h.db.Save(&release)
 			}
+			go h.cleanupPipelineRun(pipelineRunName)
 			return
 
 		case <-ticker.C:
@@ -944,7 +962,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 			case "Success":
 				release.Status = models.StatusDeployed
 				release.FinishedAt = &now
-				
+
 				// Create or update Ingress if enabled
 				if release.App.IngressEnabled {
 					serviceName := release.App.ServiceName
@@ -952,7 +970,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 						// Default service name is same as deployment name
 						serviceName = release.App.TargetDeployName
 					}
-					
+
 					ingressConfig := &k8s.IngressConfig{
 						Namespace:    release.App.TargetNamespace,
 						AppName:      release.App.Name,
@@ -963,7 +981,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 						Path:         h.config.Ingress.DefaultPath,
 						HostTemplate: h.config.Ingress.HostTemplate,
 					}
-					
+
 					if err := h.k8sClient.CreateOrUpdateIngress(ctx, ingressConfig); err != nil {
 						// Log error but don't fail the deployment
 						log.Printf("Failed to create/update Ingress for app %s: %v", release.App.Name, err)
@@ -971,7 +989,7 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 						// Update release with Ingress info
 						release.IngressCreated = true
 						release.IngressPath = h.config.Ingress.DefaultPath
-						
+
 						// Set the actual host used (either custom or generated from template)
 						if release.App.IngressHost != "" {
 							release.IngressHost = release.App.IngressHost
@@ -982,14 +1000,16 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 						log.Printf("Successfully created/updated Ingress for app %s with host %s", release.App.Name, release.IngressHost)
 					}
 				}
-				
+
 				h.db.Save(&release)
+				go h.cleanupPipelineRun(pipelineRunName)
 				return
 
 			case "Failed":
 				release.Status = models.StatusFailed
 				release.FinishedAt = &now
 				h.db.Save(&release)
+				go h.cleanupPipelineRun(pipelineRunName)
 				return
 			}
 		}

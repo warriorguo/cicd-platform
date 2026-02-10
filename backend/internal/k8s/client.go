@@ -440,6 +440,20 @@ func (c *Client) GetPipelineRunStatus(ctx context.Context, name string) (string,
 	return "Pending", nil
 }
 
+// DeletePipelineRun deletes a PipelineRun by name. Kubernetes GCs the owned pods via ownerReferences.
+func (c *Client) DeletePipelineRun(ctx context.Context, name string) error {
+	pipelineRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "pipelineruns",
+	}
+	err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete PipelineRun %s: %w", name, err)
+	}
+	return nil
+}
+
 func (c *Client) UpdateDeployment(ctx context.Context, namespace, deploymentName, imageTag string) error {
 	deploymentsRes := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 
