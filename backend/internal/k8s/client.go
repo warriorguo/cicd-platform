@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -908,6 +909,78 @@ func (c *Client) cleanupOldFailedPipelineRuns(ctx context.Context, appName, shor
 			}
 		}
 	}
+}
+
+// CleanupCompletedPipelineRuns deletes completed PipelineRuns older than maxAge.
+// It scopes to PipelineRuns created by this platform via the app.kubernetes.io/name=cicd-platform label.
+// Returns the number of PipelineRuns deleted.
+func (c *Client) CleanupCompletedPipelineRuns(ctx context.Context, maxAge time.Duration) int {
+	pipelineRunRes := schema.GroupVersionResource{
+		Group:    "tekton.dev",
+		Version:  "v1",
+		Resource: "pipelineruns",
+	}
+
+	list, err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/name=cicd-platform",
+	})
+	if err != nil {
+		log.Printf("CleanupCompletedPipelineRuns: failed to list PipelineRuns: %v", err)
+		return 0
+	}
+
+	deleted := 0
+	cutoff := time.Now().Add(-maxAge)
+
+	for _, item := range list.Items {
+		name := item.GetName()
+
+		// Check if PipelineRun is finished (Succeeded condition with status True or False)
+		conditions, found, err := unstructured.NestedSlice(item.Object, "status", "conditions")
+		if err != nil || !found || len(conditions) == 0 {
+			continue
+		}
+
+		finished := false
+		for _, condIface := range conditions {
+			cond, ok := condIface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			condType, _, _ := unstructured.NestedString(cond, "type")
+			condStatus, _, _ := unstructured.NestedString(cond, "status")
+			if condType == "Succeeded" && (condStatus == "True" || condStatus == "False") {
+				finished = true
+				break
+			}
+		}
+		if !finished {
+			continue
+		}
+
+		// Check completionTime age
+		completionTimeStr, exists, _ := unstructured.NestedString(item.Object, "status", "completionTime")
+		if !exists || completionTimeStr == "" {
+			continue
+		}
+		completionTime, err := time.Parse(time.RFC3339, completionTimeStr)
+		if err != nil {
+			continue
+		}
+		if completionTime.After(cutoff) {
+			continue // Too recent, skip
+		}
+
+		// Delete the old PipelineRun
+		if err := c.dynamicClient.Resource(pipelineRunRes).Namespace(c.namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			log.Printf("CleanupCompletedPipelineRuns: failed to delete %s: %v", name, err)
+			continue
+		}
+		log.Printf("CleanupCompletedPipelineRuns: deleted %s (completed %s)", name, completionTime.Format(time.RFC3339))
+		deleted++
+	}
+
+	return deleted
 }
 
 // ScaleDeployment scales a deployment to the specified number of replicas

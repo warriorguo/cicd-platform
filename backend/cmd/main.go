@@ -45,6 +45,9 @@ func main() {
 	// Reconcile any releases left in deploying/running state from before restart
 	handler.ReconcileStaleReleases()
 
+	// Start periodic cleanup of old completed PipelineRuns
+	handler.StartPipelineRunCleanupLoop()
+
 	// Setup routes
 	router := api.SetupRoutes(handler)
 

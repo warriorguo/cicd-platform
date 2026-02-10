@@ -168,6 +168,33 @@ func (h *Handler) ReconcileStaleReleases() {
 	log.Println("ReconcileStaleReleases: reconciliation complete")
 }
 
+// StartPipelineRunCleanupLoop launches a background goroutine that periodically
+// deletes completed PipelineRuns older than 24 hours. Runs immediately on startup
+// to clear any backlog, then ticks every 6 hours.
+func (h *Handler) StartPipelineRunCleanupLoop() {
+	if h.k8sClient == nil {
+		log.Println("PipelineRun cleanup: skipping (no K8s client)")
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		maxAge := 24 * time.Hour
+
+		// Initial run on startup
+		count := h.k8sClient.CleanupCompletedPipelineRuns(ctx, maxAge)
+		log.Printf("PipelineRun cleanup: initial run deleted %d PipelineRun(s)", count)
+
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			count := h.k8sClient.CleanupCompletedPipelineRuns(ctx, maxAge)
+			log.Printf("PipelineRun cleanup: periodic run deleted %d PipelineRun(s)", count)
+		}
+	}()
+}
+
 func (h *Handler) CreateApp(c *gin.Context) {
 	var req struct {
 		Name           string           `json:"name" binding:"required"`
