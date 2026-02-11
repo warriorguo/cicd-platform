@@ -518,7 +518,16 @@ const AppDetails = ({ onAppDeleted }) => {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
-      render: getStatusBadge,
+      render: (status, record) => {
+        const currentDeployedId = deployments[0]?.release_id;
+        if (status === 'deployed' && record.id !== currentDeployedId) {
+          // Historical deploy - show the time it was deployed
+          return record.finished_at
+            ? `Deployed ${new Date(record.finished_at).toLocaleString()}`
+            : 'Previously deployed';
+        }
+        return getStatusBadge(status);
+      },
     },
     {
       title: 'Image Tag',
@@ -537,12 +546,11 @@ const AppDetails = ({ onAppDeleted }) => {
       key: 'actions',
       render: (_, record) => {
         const isBuilding = record.status === 'pending' || record.status === 'running';
-        const canDeploy = record.status === 'success';
-        const isDeployed = record.status === 'deployed' || record.status === 'deploying';
-
-        // Find the currently deployed release ID
-        const deployedRelease = releases.find(r => r.status === 'deployed');
-        const deployedId = deployedRelease?.id;
+        const currentDeployedId = deployments[0]?.release_id;
+        const isCurrentDeployed = record.status === 'deployed' && record.id === currentDeployedId;
+        const isCurrentDeploying = record.status === 'deploying';
+        // Can deploy: successful builds OR historical deploys (not the current one)
+        const canDeploy = record.status === 'success' || (record.status === 'deployed' && record.id !== currentDeployedId);
 
         return (
           <Space size="middle">
@@ -561,7 +569,7 @@ const AppDetails = ({ onAppDeleted }) => {
                   size="small"
                   onClick={() => showDeployModal(record.id)}
                 >
-                  {deployedId ? (record.id > deployedId ? 'Upgrade' : 'Downgrade') : 'Deploy'}
+                  {currentDeployedId ? (record.id > currentDeployedId ? 'Upgrade' : 'Downgrade') : 'Deploy'}
                 </Button>
                 <Link to={`/releases/${record.id}/build`}>
                   <Button type="link" icon={<EyeOutlined />} size="small">
@@ -570,7 +578,7 @@ const AppDetails = ({ onAppDeleted }) => {
                 </Link>
               </>
             )}
-            {isDeployed && (
+            {(isCurrentDeployed || isCurrentDeploying) && (
               <Link to={`/releases/${record.id}/deploy`}>
                 <Button type="link" icon={<EyeOutlined />} size="small">
                   View Deploy
