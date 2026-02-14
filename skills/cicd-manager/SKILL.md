@@ -1,6 +1,6 @@
 ---
 name: cicd-manager
-description: Manage CI/CD workflows including building Docker images, deploying releases, and monitoring build/deploy/runtime logs. Supports creating apps, triggering builds, deploying to Kubernetes, scaling deployments, and viewing pod logs.
+description: Manage CI/CD workflows including building Docker images, deploying releases, and monitoring build/deploy/runtime logs. Supports creating apps, triggering builds, deploying to Kubernetes, scaling deployments, reloading (restarting) pods, and viewing pod logs.
 license: Apache-2.0
 compatibility: Requires network access to the CI/CD platform API
 metadata:
@@ -198,6 +198,23 @@ Content-Type: application/json
 ```
 Scales the deployment to the specified number of replicas (0-100).
 
+#### Reload (Restart) Pods
+```
+POST /api/apps/{app_id}/reload
+Content-Type: application/json
+
+{
+  "env_vars": [
+    {"name": "NODE_ENV", "value": "production"}
+  ],
+  "maxUnavailable": 25
+}
+```
+- `env_vars` (optional): Updated environment variables (saved to app if provided)
+- `maxUnavailable` (optional): Max unavailable percentage during rollout, defaults to 25
+
+Restarts all pods by creating a new deploy PipelineRun using the same image as the currently deployed release. Useful for picking up config changes or restarting unhealthy pods. Requires an existing deployed release.
+
 ---
 
 ### Runtime Pod Logs
@@ -289,7 +306,21 @@ curl {CICD_API_URL}/api/apps/{app_id}/pods/{pod_name}/describe
 curl {CICD_API_URL}/api/apps/{app_id}/pods/{pod_name}/logs
 ```
 
-### 3. Scale a Deployment
+### 3. Reload (Restart) Pods
+
+```bash
+# Reload with same config
+curl -X POST {CICD_API_URL}/api/apps/{app_id}/reload \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Reload with updated env vars
+curl -X POST {CICD_API_URL}/api/apps/{app_id}/reload \
+  -H "Content-Type: application/json" \
+  -d '{"env_vars": [{"name": "LOG_LEVEL", "value": "debug"}]}'
+```
+
+### 4. Scale a Deployment
 
 ```bash
 # Scale up

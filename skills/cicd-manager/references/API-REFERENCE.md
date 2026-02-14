@@ -465,6 +465,44 @@ Scale a deployment.
 
 ---
 
+### POST /api/apps/{id}/reload
+Reload (restart) all pods using the same image as the currently deployed release.
+
+**Preconditions:**
+- App must have an existing deployed release
+
+**Request:**
+```json
+{
+  "env_vars": [
+    {"name": "NODE_ENV", "value": "production"},
+    {"name": "API_KEY", "value": "secret", "is_secret": true}
+  ],
+  "maxUnavailable": 25
+}
+```
+All fields are optional. If `env_vars` is provided, they are saved to the app and used for the new deployment.
+
+**Response:** `200 OK`
+```json
+{
+  "message": "Reload initiated",
+  "release": {
+    "id": 42,
+    "app_id": 1,
+    "status": "deploying",
+    "image_tag": "harbor.example.com/library/my-app:abc1234",
+    ...
+  }
+}
+```
+
+**Errors:**
+- `400`: No deployed release found to reload
+- `409`: Another deployment is already running
+
+---
+
 ### DELETE /api/apps/{id}/deployments/{releaseId}
 Delete a specific deployment.
 
