@@ -55,6 +55,7 @@ type DefaultsConfig struct {
 type IngressConfig struct {
 	HostTemplate string `mapstructure:"host_template"`
 	DefaultPath  string `mapstructure:"default_path"`
+	TLSSecret    string `mapstructure:"tls_secret"`
 }
 
 func Load() (*Config, error) {
@@ -89,6 +90,7 @@ func Load() (*Config, error) {
 	v.SetDefault("defaults.registry_secret_ref", "")
 	v.SetDefault("ingress.host_template", "*.localhost")
 	v.SetDefault("ingress.default_path", "/")
+	v.SetDefault("ingress.tls_secret", "")
 
 	// Enable environment variable overrides with underscore separator
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

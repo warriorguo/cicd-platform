@@ -1577,15 +1577,16 @@ func (c *Client) DeleteDeployment(ctx context.Context, namespace, deploymentName
 
 // IngressConfig holds configuration for creating/updating an Ingress
 type IngressConfig struct {
-	Name         string
-	Namespace    string
-	AppName      string
-	ServiceName  string
-	ServicePort  int
-	CommitSHA    string
-	Host         string // Required for host-based routing
-	Path         string // Path to use (defaults to "/")
-	HostTemplate string // Template like "*.local.playquota.com"
+	Name          string
+	Namespace     string
+	AppName       string
+	ServiceName   string
+	ServicePort   int
+	CommitSHA     string
+	Host          string // Required for host-based routing
+	Path          string // Path to use (defaults to "/")
+	HostTemplate  string // Template like "*.local.playquota.com"
+	TLSSecretName string // TLS secret name for HTTPS termination
 }
 
 // generateHostFromTemplate generates a host from template and app name
@@ -1654,6 +1655,16 @@ func (c *Client) CreateOrUpdateIngress(ctx context.Context, config *IngressConfi
 				},
 			},
 		},
+	}
+
+	// Add TLS if secret name is configured
+	if config.TLSSecretName != "" && host != "" {
+		ingressSpec.TLS = []networkingv1.IngressTLS{
+			{
+				Hosts:      []string{host},
+				SecretName: config.TLSSecretName,
+			},
+		}
 	}
 	
 	// Check if Ingress already exists

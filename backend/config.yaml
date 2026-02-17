@@ -1,0 +1,35 @@
+# CI/CD Platform Configuration File
+# This file contains default configuration values for the platform
+
+server:
+  host: "0.0.0.0"
+  port: "9091"
+
+database:
+  host: "192.168.0.151"
+  port: "5432"
+  user: "liuli"
+  password: ""
+  dbname: "postgres"
+  sslmode: "disable"
+
+k8s:
+  in_cluster: false
+  kubeconfig: ""  # Auto-detected if empty
+  pipeline_namespace: "cicd-runners"
+  tekton_namespace: "tekton-pipelines"
+
+harbor:
+  endpoint: "local-harbor.playquota.com"
+  project: "library"
+
+ingress:
+  host_template: "*.local.playquota.com"
+  default_path: "/"
+  tls_secret: "wildcard-local-playquota-tls"
+
+defaults:
+  target_namespace: "default"
+  context_path: "."
+  git_secret_ref: ""
+  registry_secret_ref: "kaniko-docker-config-ssl-manual"

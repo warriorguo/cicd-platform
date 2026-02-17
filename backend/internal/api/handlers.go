@@ -115,14 +115,15 @@ func (h *Handler) ReconcileStaleReleases() {
 						serviceName = release.App.TargetDeployName
 					}
 					ingressConfig := &k8s.IngressConfig{
-						Namespace:    release.App.TargetNamespace,
-						AppName:      release.App.Name,
-						ServiceName:  serviceName,
-						ServicePort:  release.App.ServicePort,
-						CommitSHA:    release.CommitSHA,
-						Host:         release.App.IngressHost,
-						Path:         h.config.Ingress.DefaultPath,
-						HostTemplate: h.config.Ingress.HostTemplate,
+						Namespace:     release.App.TargetNamespace,
+						AppName:       release.App.Name,
+						ServiceName:   serviceName,
+						ServicePort:   release.App.ServicePort,
+						CommitSHA:     release.CommitSHA,
+						Host:          release.App.IngressHost,
+						Path:          h.config.Ingress.DefaultPath,
+						HostTemplate:  h.config.Ingress.HostTemplate,
+						TLSSecretName: h.config.Ingress.TLSSecret,
 					}
 					if err := h.k8sClient.CreateOrUpdateIngress(ctx, ingressConfig); err != nil {
 						log.Printf("ReconcileStaleReleases: failed to create/update Ingress for app %s: %v", release.App.Name, err)
@@ -999,14 +1000,15 @@ func (h *Handler) watchDeployPipelineRun(releaseID uint, pipelineRunName string)
 					}
 
 					ingressConfig := &k8s.IngressConfig{
-						Namespace:    release.App.TargetNamespace,
-						AppName:      release.App.Name,
-						ServiceName:  serviceName,
-						ServicePort:  release.App.ServicePort,
-						CommitSHA:    release.CommitSHA,
-						Host:         release.App.IngressHost, // Custom host if specified
-						Path:         h.config.Ingress.DefaultPath,
-						HostTemplate: h.config.Ingress.HostTemplate,
+						Namespace:     release.App.TargetNamespace,
+						AppName:       release.App.Name,
+						ServiceName:   serviceName,
+						ServicePort:   release.App.ServicePort,
+						CommitSHA:     release.CommitSHA,
+						Host:          release.App.IngressHost, // Custom host if specified
+						Path:          h.config.Ingress.DefaultPath,
+						HostTemplate:  h.config.Ingress.HostTemplate,
+						TLSSecretName: h.config.Ingress.TLSSecret,
 					}
 
 					if err := h.k8sClient.CreateOrUpdateIngress(ctx, ingressConfig); err != nil {
@@ -1889,18 +1891,27 @@ func (h *Handler) GetAppIngress(c *gin.Context) {
 		"host":    release.IngressHost,
 	}
 
+	scheme := "http"
+	if h.config.Ingress.TLSSecret != "" {
+		scheme = "https"
+	}
+
 	if h.k8sClient != nil && release.IngressCreated {
 		ingress, err := h.k8sClient.GetIngress(c.Request.Context(), app.TargetNamespace, app.Name)
 		if err == nil && ingress != nil {
+			// Use https if the Ingress has TLS configured
+			if len(ingress.Spec.TLS) > 0 {
+				scheme = "https"
+			}
+
 			// Extract the actual URL from the Ingress (host-based routing)
 			if len(ingress.Spec.Rules) > 0 {
 				rule := ingress.Spec.Rules[0]
 				host := rule.Host
-				
+
 				if len(rule.HTTP.Paths) > 0 {
 					path := rule.HTTP.Paths[0].Path
-					// For host-based routing, URL is simply http://host + path
-					ingressInfo["url"] = fmt.Sprintf("http://%s%s", host, path)
+					ingressInfo["url"] = fmt.Sprintf("%s://%s%s", scheme, host, path)
 					ingressInfo["host"] = host
 					ingressInfo["path"] = path
 				}
@@ -1923,7 +1934,7 @@ func (h *Handler) GetAppIngress(c *gin.Context) {
 			if expectedPath == "" {
 				expectedPath = h.config.Ingress.DefaultPath
 			}
-			ingressInfo["url"] = fmt.Sprintf("http://%s%s", expectedHost, expectedPath)
+			ingressInfo["url"] = fmt.Sprintf("%s://%s%s", scheme, expectedHost, expectedPath)
 		}
 	}
 
