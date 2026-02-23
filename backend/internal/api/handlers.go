@@ -199,7 +199,8 @@ func (h *Handler) StartPipelineRunCleanupLoop() {
 func (h *Handler) CreateApp(c *gin.Context) {
 	var req struct {
 		Name           string           `json:"name" binding:"required"`
-		GitURL         string           `json:"git_url" binding:"required"`
+		GitURL         string           `json:"git_url"`
+		ExternalImage  string           `json:"external_image"`
 		DefaultBranch  string           `json:"default_branch"`
 		BuildType      models.BuildType `json:"build_type"`
 		DockerfilePath string           `json:"dockerfile_path"`
@@ -208,6 +209,61 @@ func (h *Handler) CreateApp(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.ServicePort == 0 {
+		req.ServicePort = 8080 // Default service port
+	}
+
+	// Validate based on build type
+	if req.BuildType == models.BuildTypeExternalImage {
+		if req.ExternalImage == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "external_image is required for external-image build type"})
+			return
+		}
+		if req.GitURL != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "git_url should not be provided for external-image build type"})
+			return
+		}
+
+		// Parse image address: split into repo and tag at last ":"
+		registryRepo := req.ExternalImage
+		if idx := strings.LastIndex(req.ExternalImage, ":"); idx > 0 {
+			// Make sure we're not splitting on a port number in the registry host
+			// e.g., localhost:5000/myapp:v1 — the last ":" separates repo from tag
+			afterColon := req.ExternalImage[idx+1:]
+			if !strings.Contains(afterColon, "/") {
+				registryRepo = req.ExternalImage[:idx]
+			}
+		}
+
+		app := models.App{
+			Name:             req.Name,
+			BuildType:        models.BuildTypeExternalImage,
+			RegistryRepo:     registryRepo,
+			TargetNamespace:  h.config.Defaults.TargetNamespace,
+			TargetDeployName: req.Name,
+			Replicas:         1,
+			ServiceName:      req.Name,
+			ServicePort:      req.ServicePort,
+			IngressEnabled:   true,
+			IngressHost:      "",
+			EnvVars:          models.EnvVars{},
+		}
+
+		if err := h.db.Create(&app).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create app"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, app)
+		return
+	}
+
+	// Regular build-from-source flow
+	if req.GitURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "git_url is required"})
 		return
 	}
 
@@ -225,13 +281,10 @@ func (h *Handler) CreateApp(c *gin.Context) {
 			req.DockerfilePath = "Dockerfile"
 		}
 	}
-	if req.ServicePort == 0 {
-		req.ServicePort = 8080 // Default service port
-	}
 
 	// Generate default values from config
 	registryRepo := fmt.Sprintf("%s/%s/%s", h.config.Harbor.Endpoint, h.config.Harbor.Project, req.Name)
-	
+
 	app := models.App{
 		Name:              req.Name,
 		GitURL:            req.GitURL,
@@ -376,6 +429,7 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 	var req struct {
 		Branch    string `json:"branch"`
 		CommitSHA string `json:"commit_sha"`
+		ImageTag  string `json:"image_tag"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -383,6 +437,47 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 		return
 	}
 
+	var app models.App
+	if err := h.db.First(&app, uint(id)).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
+		return
+	}
+
+	// External image apps: skip build, create release with status success
+	if app.BuildType == models.BuildTypeExternalImage {
+		// Default image tag to app.RegistryRepo + ":latest"
+		imageTag := req.ImageTag
+		if imageTag == "" {
+			imageTag = app.RegistryRepo + ":latest"
+		}
+
+		// Check for running releases
+		var runningCount int64
+		h.db.Model(&models.Release{}).Where("app_id = ? AND status IN ?", app.ID, []models.ReleaseStatus{models.StatusRunning, models.StatusDeploying}).Count(&runningCount)
+		if runningCount > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "Another release is already running for this app"})
+			return
+		}
+
+		now := time.Now()
+		release := models.Release{
+			AppID:      app.ID,
+			ImageTag:   imageTag,
+			Status:     models.StatusSuccess,
+			StartedAt:  &now,
+			FinishedAt: &now,
+		}
+
+		if err := h.db.Create(&release).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create release"})
+			return
+		}
+
+		c.JSON(http.StatusCreated, release)
+		return
+	}
+
+	// Regular build-from-source flow
 	// Validate required fields
 	if req.CommitSHA == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_sha is required"})
@@ -390,12 +485,6 @@ func (h *Handler) CreateRelease(c *gin.Context) {
 	}
 	if len(req.CommitSHA) < 7 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_sha must be at least 7 characters long"})
-		return
-	}
-
-	var app models.App
-	if err := h.db.First(&app, uint(id)).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "App not found"})
 		return
 	}
 
@@ -900,10 +989,18 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			envVars = release.App.EnvVars
 		}
 
+		// Extract ImageRepo and ImageTag from release.ImageTag
+		// This handles both regular (harbor.../myapp:abc1234) and external (nginx:1.25) images
+		deployImageRepo := release.App.RegistryRepo
+		deployImageTag := release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:]
+		if lastColon := strings.LastIndex(release.ImageTag, ":"); lastColon > 0 {
+			deployImageRepo = release.ImageTag[:lastColon]
+		}
+
 		deployReq := &k8s.DeployPipelineRunRequest{
 			AppName:          release.App.Name,
-			ImageRepo:        release.App.RegistryRepo,
-			ImageTag:         release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:], // Extract tag from full image
+			ImageRepo:        deployImageRepo,
+			ImageTag:         deployImageTag,
 			TargetNamespace:  release.App.TargetNamespace,
 			TargetDeployName: release.App.TargetDeployName,
 			Replicas:         replicas,
@@ -1494,10 +1591,17 @@ func (h *Handler) ReloadApp(c *gin.Context) {
 			envVars = app.EnvVars
 		}
 
+		// Extract ImageRepo and ImageTag from release.ImageTag
+		reloadImageRepo := app.RegistryRepo
+		reloadImageTag := release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:]
+		if lastColon := strings.LastIndex(release.ImageTag, ":"); lastColon > 0 {
+			reloadImageRepo = release.ImageTag[:lastColon]
+		}
+
 		deployReq := &k8s.DeployPipelineRunRequest{
 			AppName:          app.Name,
-			ImageRepo:        app.RegistryRepo,
-			ImageTag:         release.ImageTag[strings.LastIndex(release.ImageTag, ":")+1:],
+			ImageRepo:        reloadImageRepo,
+			ImageTag:         reloadImageTag,
 			TargetNamespace:  app.TargetNamespace,
 			TargetDeployName: app.TargetDeployName,
 			Replicas:         replicas,

@@ -152,6 +152,11 @@ spec:
                 echo "$ENV_VARS" | jq -r '.[] | "--env=\(.name)=\(.value)"' | tr '\n' ' ' | xargs -r kubectl set env deployment/$(params.DEPLOYMENT_NAME) -n $(params.NAMESPACE) --containers='*'
               fi
 
+              # Force restart pods (needed when image tag is unchanged, e.g. reload)
+              echo "Restarting deployment pods..."
+              kubectl rollout restart deployment/$(params.DEPLOYMENT_NAME) \
+                -n $(params.NAMESPACE)
+
               echo "Waiting for rollout to complete..."
               kubectl rollout status deployment/$(params.DEPLOYMENT_NAME) \
                 -n $(params.NAMESPACE) \

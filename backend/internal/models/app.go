@@ -12,6 +12,7 @@ type BuildType string
 const (
 	BuildTypeDockerfile     BuildType = "dockerfile"
 	BuildTypeDockerCompose  BuildType = "docker-compose"
+	BuildTypeExternalImage  BuildType = "external-image"
 )
 
 type EnvVar struct {
@@ -45,7 +46,7 @@ func (e EnvVars) Value() (driver.Value, error) {
 type App struct {
 	ID               uint      `json:"id" gorm:"primaryKey"`
 	Name             string    `json:"name" gorm:"uniqueIndex;not null"`
-	GitURL           string    `json:"git_url" gorm:"not null"`
+	GitURL           string    `json:"git_url"`
 	DefaultBranch    string    `json:"default_branch" gorm:"default:'main'"`
 	BuildType        BuildType `json:"build_type" gorm:"default:'dockerfile'"`
 	DockerfilePath   string    `json:"dockerfile_path" gorm:"default:'Dockerfile'"`

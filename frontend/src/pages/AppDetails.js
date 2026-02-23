@@ -78,6 +78,10 @@ const AppDetails = ({ onAppDeleted }) => {
   const [reloading, setReloading] = useState(false);
   const [reloadForm] = Form.useForm();
   const [selectedReloadDeployment, setSelectedReloadDeployment] = useState(null);
+  const [externalImageTag, setExternalImageTag] = useState('');
+  const [externalDeployModalVisible, setExternalDeployModalVisible] = useState(false);
+  const [externalDeployForm] = Form.useForm();
+  const [externalDeploying, setExternalDeploying] = useState(false);
 
   // Helper function to clean ANSI escape sequences
   const cleanAnsiEscapes = (text) => {
@@ -221,6 +225,39 @@ const AppDetails = ({ onAppDeleted }) => {
         }
       },
     });
+  };
+
+  const handleExternalImageDeploy = () => {
+    const imageTag = externalImageTag || (app.registry_repo + ':latest');
+    externalDeployForm.setFieldsValue({
+      maxUnavailable: 25,
+      env_vars: app?.env_vars || []
+    });
+    setExternalDeployModalVisible(true);
+  };
+
+  const handleExternalDeployModalOk = async () => {
+    try {
+      const values = await externalDeployForm.validateFields();
+      setExternalDeploying(true);
+
+      const imageTag = externalImageTag || (app.registry_repo + ':latest');
+
+      // Step 1: Create release with image_tag
+      const releaseResponse = await appsAPI.createRelease(id, { image_tag: imageTag });
+      const releaseId = releaseResponse.data.id;
+
+      // Step 2: Deploy the release
+      await appsAPI.deployRelease(releaseId, values);
+      message.success('Deployment initiated');
+      setExternalDeployModalVisible(false);
+      navigate(`/releases/${releaseId}/deploy`);
+    } catch (error) {
+      if (error.errorFields) return;
+      message.error(error.response?.data?.error || 'Failed to deploy');
+    } finally {
+      setExternalDeploying(false);
+    }
   };
 
   const showDeployModal = (releaseId) => {
@@ -495,6 +532,8 @@ const AppDetails = ({ onAppDeleted }) => {
     }
   };
 
+  const isExternalImage = app?.build_type === 'external-image';
+
   const releasesColumns = [
     {
       title: 'ID',
@@ -502,17 +541,17 @@ const AppDetails = ({ onAppDeleted }) => {
       key: 'id',
       width: 80,
     },
-    {
+    ...(!isExternalImage ? [{
       title: 'Branch',
       dataIndex: 'branch',
       key: 'branch',
-      render: (text) => <Tag color="blue">{text}</Tag>,
-    },
+      render: (text) => text ? <Tag color="blue">{text}</Tag> : '-',
+    }] : []),
     {
-      title: 'Commit SHA',
-      dataIndex: 'commit_sha',
-      key: 'commit_sha',
-      render: (text) => text ? <code>{text.substring(0, 8)}</code> : '-',
+      title: isExternalImage ? 'Image' : 'Commit SHA',
+      dataIndex: isExternalImage ? 'image_tag' : 'commit_sha',
+      key: isExternalImage ? 'image_tag' : 'commit_sha',
+      render: (text) => text ? <code>{isExternalImage ? text : text.substring(0, 8)}</code> : '-',
     },
     {
       title: 'Status',
@@ -529,12 +568,12 @@ const AppDetails = ({ onAppDeleted }) => {
         return getStatusBadge(status);
       },
     },
-    {
+    ...(!isExternalImage ? [{
       title: 'Image Tag',
       dataIndex: 'image_tag',
       key: 'image_tag',
       render: (text) => text ? <code>{text}</code> : '-',
-    },
+    }] : []),
     {
       title: 'Created',
       dataIndex: 'created_at',
@@ -554,7 +593,7 @@ const AppDetails = ({ onAppDeleted }) => {
 
         return (
           <Space size="middle">
-            {isBuilding && (
+            {isBuilding && !isExternalImage && (
               <Link to={`/releases/${record.id}/build`}>
                 <Button type="link" icon={<EyeOutlined />} size="small">
                   View Build
@@ -571,11 +610,13 @@ const AppDetails = ({ onAppDeleted }) => {
                 >
                   {currentDeployedId ? (record.id > currentDeployedId ? 'Upgrade' : 'Downgrade') : 'Deploy'}
                 </Button>
-                <Link to={`/releases/${record.id}/build`}>
-                  <Button type="link" icon={<EyeOutlined />} size="small">
-                    View Build
-                  </Button>
-                </Link>
+                {!isExternalImage && (
+                  <Link to={`/releases/${record.id}/build`}>
+                    <Button type="link" icon={<EyeOutlined />} size="small">
+                      View Build
+                    </Button>
+                  </Link>
+                )}
               </>
             )}
             {(isCurrentDeployed || isCurrentDeploying) && (
@@ -585,7 +626,7 @@ const AppDetails = ({ onAppDeleted }) => {
                 </Button>
               </Link>
             )}
-            {record.status === 'failed' && (
+            {record.status === 'failed' && !isExternalImage && (
               <Link to={`/releases/${record.id}/build`}>
                 <Button type="link" icon={<ExclamationCircleOutlined />} size="small">
                   View Build
@@ -630,109 +671,145 @@ const AppDetails = ({ onAppDeleted }) => {
         }
       >
         <Descriptions column={2} style={{ marginBottom: 24 }}>
-          <Descriptions.Item label="Git Repository">
-            <a href={app.git_url} target="_blank" rel="noopener noreferrer">
-              {app.git_url}
-            </a>
-          </Descriptions.Item>
-          <Descriptions.Item label="Default Branch">
-            <Tag color="blue">{app.default_branch}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="Registry Repository">
-            {app.registry_repo}
-          </Descriptions.Item>
+          {app.build_type === 'external-image' ? (
+            <>
+              <Descriptions.Item label="Build Type">
+                <Tag color="purple">External Image</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="Image Repository">
+                <code>{app.registry_repo}</code>
+              </Descriptions.Item>
+            </>
+          ) : (
+            <>
+              <Descriptions.Item label="Git Repository">
+                <a href={app.git_url} target="_blank" rel="noopener noreferrer">
+                  {app.git_url}
+                </a>
+              </Descriptions.Item>
+              <Descriptions.Item label="Default Branch">
+                <Tag color="blue">{app.default_branch}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="Registry Repository">
+                {app.registry_repo}
+              </Descriptions.Item>
+              <Descriptions.Item label="Dockerfile Path">
+                <code>{app.dockerfile_path}</code>
+              </Descriptions.Item>
+              <Descriptions.Item label="Build Context">
+                <code>{app.context_path}</code>
+              </Descriptions.Item>
+            </>
+          )}
           <Descriptions.Item label="Target Namespace">
             <Tag color="green">{app.target_namespace}</Tag>
           </Descriptions.Item>
-          <Descriptions.Item label="Dockerfile Path">
-            <code>{app.dockerfile_path}</code>
-          </Descriptions.Item>
-          <Descriptions.Item label="Build Context">
-            <code>{app.context_path}</code>
-          </Descriptions.Item>
         </Descriptions>
 
-        <Card title="Build" size="small" style={{ marginBottom: 24 }}>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Space>
-              <Select
-                placeholder="Select branch"
-                value={selectedBranch?.name}
-                onChange={(branchName) => {
-                  const branch = branches.find(b => b.name === branchName);
-                  setSelectedBranch(branch);
-                }}
-                loading={branchesLoading}
-                onDropdownVisibleChange={(open) => {
-                  if (open && branches.length === 0) {
-                    fetchBranches();
-                  }
-                }}
-                style={{ width: 350 }}
-              >
-                {branches.map(branch => (
-                  <Option key={branch.name} value={branch.name}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ fontWeight: 500 }}>{branch.name}</span>
-                      <span style={{ color: '#999', fontSize: '12px', fontFamily: 'monospace' }}>
-                        {branch.sha.substring(0, 7)}
-                      </span>
-                    </div>
-                  </Option>
-                ))}
-              </Select>
-              <Button 
-                onClick={fetchBranches}
-                loading={branchesLoading}
-              >
-                Fetch Branches
-              </Button>
-              <Button 
-                onClick={() => validateDockerfile(selectedBranch)}
-                loading={validating}
-                disabled={!selectedBranch}
-                icon={<CheckCircleOutlined />}
-              >
-                Validate Dockerfile
-              </Button>
-              <Button 
-                type="primary"
-                onClick={handleDeploy}
-                loading={deploying}
-                disabled={!selectedBranch}
-                icon={<BuildOutlined />}
-              >
-                Build
-              </Button>
+        {app.build_type === 'external-image' ? (
+          <Card title="Deploy Image" size="small" style={{ marginBottom: 24 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Space>
+                <Input
+                  placeholder={app.registry_repo + ':latest'}
+                  value={externalImageTag}
+                  onChange={(e) => setExternalImageTag(e.target.value)}
+                  style={{ width: 400 }}
+                />
+                <Button
+                  type="primary"
+                  onClick={handleExternalImageDeploy}
+                  loading={externalDeploying}
+                  icon={<PlayCircleOutlined />}
+                >
+                  Deploy
+                </Button>
+              </Space>
             </Space>
+          </Card>
+        ) : (
+          <Card title="Build" size="small" style={{ marginBottom: 24 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Space>
+                <Select
+                  placeholder="Select branch"
+                  value={selectedBranch?.name}
+                  onChange={(branchName) => {
+                    const branch = branches.find(b => b.name === branchName);
+                    setSelectedBranch(branch);
+                  }}
+                  loading={branchesLoading}
+                  onDropdownVisibleChange={(open) => {
+                    if (open && branches.length === 0) {
+                      fetchBranches();
+                    }
+                  }}
+                  style={{ width: 350 }}
+                >
+                  {branches.map(branch => (
+                    <Option key={branch.name} value={branch.name}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: 500 }}>{branch.name}</span>
+                        <span style={{ color: '#999', fontSize: '12px', fontFamily: 'monospace' }}>
+                          {branch.sha.substring(0, 7)}
+                        </span>
+                      </div>
+                    </Option>
+                  ))}
+                </Select>
+                <Button
+                  onClick={fetchBranches}
+                  loading={branchesLoading}
+                >
+                  Fetch Branches
+                </Button>
+                <Button
+                  onClick={() => validateDockerfile(selectedBranch)}
+                  loading={validating}
+                  disabled={!selectedBranch}
+                  icon={<CheckCircleOutlined />}
+                >
+                  Validate Dockerfile
+                </Button>
+                <Button
+                  type="primary"
+                  onClick={handleDeploy}
+                  loading={deploying}
+                  disabled={!selectedBranch}
+                  icon={<BuildOutlined />}
+                >
+                  Build
+                </Button>
+              </Space>
 
-            {selectedBranch && selectedBranch.sha && (
-              <Alert
-                message={
-                  <span>
-                    Selected commit: <code style={{ fontFamily: 'monospace' }}>{selectedBranch.sha}</code>
-                  </span>
-                }
-                type="info"
-                showIcon
-                style={{ marginTop: 8 }}
-              />
-            )}
+              {selectedBranch && selectedBranch.sha && (
+                <Alert
+                  message={
+                    <span>
+                      Selected commit: <code style={{ fontFamily: 'monospace' }}>{selectedBranch.sha}</code>
+                    </span>
+                  }
+                  type="info"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                />
+              )}
 
-            {dockerfileValidation && (
-              <Alert
-                type={dockerfileValidation.valid ? "success" : "error"}
-                message={
-                  dockerfileValidation.valid 
-                    ? `Dockerfile found at ${dockerfileValidation.path}`
-                    : `Dockerfile not found at ${dockerfileValidation.path}`
-                }
-                description={dockerfileValidation.error}
-                showIcon
-              />
-            )}
-          </Space>
-        </Card>
+              {dockerfileValidation && (
+                <Alert
+                  type={dockerfileValidation.valid ? "success" : "error"}
+                  message={
+                    dockerfileValidation.valid
+                      ? `Dockerfile found at ${dockerfileValidation.path}`
+                      : `Dockerfile not found at ${dockerfileValidation.path}`
+                  }
+                  description={dockerfileValidation.error}
+                  showIcon
+                />
+              )}
+            </Space>
+          </Card>
+        )}
 
         <Card 
           title="Deployed Pods" 
@@ -986,8 +1063,8 @@ const AppDetails = ({ onAppDeleted }) => {
           )}
         </Card>
 
-        <Card 
-          title="Recent Build" 
+        <Card
+          title={isExternalImage ? "Recent Releases" : "Recent Build"}
           size="small"
           extra={
             <Button icon={<ReloadOutlined />} onClick={fetchReleases} size="small">
@@ -1137,6 +1214,112 @@ const AppDetails = ({ onAppDeleted }) => {
             name="maxUnavailable"
             rules={[{ required: true, message: 'Please enter rolling update percentage' }]}
             help="Maximum percentage of pods that can be unavailable during the restart (default: 25%)"
+          >
+            <InputNumber
+              min={1}
+              max={100}
+              style={{ width: '100%' }}
+              formatter={value => `${value}%`}
+              parser={value => value.replace('%', '')}
+              placeholder="25"
+            />
+          </Form.Item>
+
+          <Form.Item
+            label="Environment Variables"
+            help="Configure runtime environment variables for the deployment"
+          >
+            <Form.List name="env_vars">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <Space
+                      key={key}
+                      style={{
+                        display: 'flex',
+                        marginBottom: 8,
+                        alignItems: 'flex-start',
+                      }}
+                      align="baseline"
+                    >
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'name']}
+                        rules={[
+                          { required: true, message: 'Missing variable name' },
+                          { pattern: /^[A-Z_][A-Z0-9_]*$/i, message: 'Invalid variable name' }
+                        ]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Name" />
+                      </Form.Item>
+                      <Form.Item
+                        {...restField}
+                        name={[name, 'value']}
+                        rules={[{ required: true, message: 'Missing variable value' }]}
+                        style={{ margin: 0, flex: 1 }}
+                      >
+                        <Input placeholder="Variable Value" />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(name)}
+                        danger
+                        size="small"
+                      />
+                    </Space>
+                  ))}
+                  <Form.Item>
+                    <Button
+                      type="dashed"
+                      onClick={() => add()}
+                      block
+                      icon={<PlusOutlined />}
+                    >
+                      Add Environment Variable
+                    </Button>
+                  </Form.Item>
+                </>
+              )}
+            </Form.List>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* External Image Deploy Configuration Modal */}
+      <Modal
+        title={
+          <Space>
+            <PlayCircleOutlined />
+            Deploy Image
+          </Space>
+        }
+        visible={externalDeployModalVisible}
+        onOk={handleExternalDeployModalOk}
+        onCancel={() => setExternalDeployModalVisible(false)}
+        width={600}
+        okText="Deploy"
+        cancelText="Cancel"
+        confirmLoading={externalDeploying}
+      >
+        <Form
+          form={externalDeployForm}
+          layout="vertical"
+          initialValues={{
+            maxUnavailable: 25,
+            env_vars: []
+          }}
+        >
+          <Form.Item label="Image">
+            <Input value={externalImageTag || (app?.registry_repo + ':latest')} disabled />
+          </Form.Item>
+
+          <Form.Item
+            label="Rolling Update Strategy"
+            name="maxUnavailable"
+            rules={[{ required: true, message: 'Please enter rolling update percentage' }]}
+            help="Maximum percentage of pods that can be unavailable during the update (default: 25%)"
           >
             <InputNumber
               min={1}
