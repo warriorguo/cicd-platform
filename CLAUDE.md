@@ -112,6 +112,14 @@ PostgreSQL with GORM auto-migration. Key tables:
 - `releases`: Build/deploy history with status tracking
 - `build_logs`: Per-stage logs with container-level granularity
 
+## Skill Definitions
+
+When API endpoints are added, modified, or removed, you MUST also update the skill definitions in both locations:
+- `skills/cicd-manager/SKILL.md` — main skill doc (checked into repo)
+- `skills/cicd-manager/references/API-REFERENCE.md` — detailed API reference (checked into repo)
+
+Also sync changes to the user's local skill directory at `~/.claude/skills/cicd-manager/`.
+
 ## Testing Notes
 
 - Backend tests use `testify/assert`

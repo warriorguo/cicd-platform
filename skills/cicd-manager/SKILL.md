@@ -1,6 +1,6 @@
 ---
 name: cicd-manager
-description: Manage CI/CD workflows including building Docker images, deploying releases, and monitoring build/deploy/runtime logs. Supports creating apps, triggering builds, deploying to Kubernetes, scaling deployments, reloading (restarting) pods, and viewing pod logs.
+description: Manage CI/CD workflows including building Docker images, deploying releases, deploying external/pre-built images, and monitoring build/deploy/runtime logs. Supports creating apps, triggering builds, deploying to Kubernetes, scaling deployments, reloading (restarting) pods, and viewing pod logs.
 license: Apache-2.0
 compatibility: Requires network access to the CI/CD platform API
 metadata:
@@ -38,7 +38,7 @@ GET /api/apps/{app_id}
 ```
 Returns detailed information about a specific app.
 
-#### Create App
+#### Create App (Build from Source)
 ```
 POST /api/apps
 Content-Type: application/json
@@ -53,11 +53,29 @@ Content-Type: application/json
 }
 ```
 - `name` (required): Application name
-- `git_url` (required): Git repository URL
+- `git_url` (required for source builds): Git repository URL
 - `default_branch` (optional): Default branch, defaults to "main"
-- `build_type` (optional): "dockerfile" or "docker-compose"
+- `build_type` (optional): "dockerfile", "docker-compose", or "external-image"
 - `dockerfile_path` (optional): Path to Dockerfile, defaults to "Dockerfile"
 - `service_port` (optional): Service port, defaults to 8080
+
+#### Create App (External Image)
+```
+POST /api/apps
+Content-Type: application/json
+
+{
+  "name": "my-nginx",
+  "build_type": "external-image",
+  "external_image": "nginx:latest",
+  "service_port": 80
+}
+```
+- `name` (required): Application name
+- `build_type` (required): Must be "external-image"
+- `external_image` (required): Full image address (e.g., `nginx:latest`, `gcr.io/project/app:v1`)
+- `service_port` (optional): Service port, defaults to 8080
+- `git_url` must NOT be provided for external-image apps
 
 #### Delete App
 ```
@@ -69,7 +87,7 @@ Deletes app and all associated resources. App must have no running pods.
 
 ### Building Images (Releases)
 
-#### Trigger a Build
+#### Trigger a Build (Source Apps)
 ```
 POST /api/apps/{app_id}/releases
 Content-Type: application/json
@@ -84,6 +102,19 @@ X-Git-Token: <optional-git-token>
 - `commit_sha` (required): Full or short commit SHA (min 7 chars)
 
 Returns the created release object with status `pending`.
+
+#### Create Release (External Image Apps)
+```
+POST /api/apps/{app_id}/releases
+Content-Type: application/json
+
+{
+  "image_tag": "nginx:1.25"
+}
+```
+- `image_tag` (optional): Full image address to deploy. Defaults to `{app.registry_repo}:latest`
+
+Returns the created release object with status `success` (no build needed). Deploy it immediately with `POST /api/releases/{id}/deploy`.
 
 #### List Releases for App
 ```
@@ -320,7 +351,29 @@ curl -X POST {CICD_API_URL}/api/apps/{app_id}/reload \
   -d '{"env_vars": [{"name": "LOG_LEVEL", "value": "debug"}]}'
 ```
 
-### 4. Scale a Deployment
+### 4. Deploy an External Image
+
+```bash
+# 1. Create app (one-time)
+curl -X POST {CICD_API_URL}/api/apps \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-nginx", "build_type": "external-image", "external_image": "nginx:latest", "service_port": 80}'
+
+# 2. Create release (instant success, no build)
+curl -X POST {CICD_API_URL}/api/apps/{app_id}/releases \
+  -H "Content-Type: application/json" \
+  -d '{"image_tag": "nginx:1.25"}'
+
+# 3. Deploy with optional env vars
+curl -X POST {CICD_API_URL}/api/releases/{release_id}/deploy \
+  -H "Content-Type: application/json" \
+  -d '{"env_vars": [{"name": "MY_VAR", "value": "hello"}]}'
+
+# 4. Check deployment status
+curl {CICD_API_URL}/api/apps/{app_id}/deployments
+```
+
+### 5. Scale a Deployment
 
 ```bash
 # Scale up
@@ -362,4 +415,6 @@ Error responses follow this format:
 3. **Check release status is "success"** before attempting to deploy
 4. **Use pod describe** for debugging failing pods - it shows events
 5. **Build logs are available per-stage** - check stages first to find failures
-6. **Commit SHA must be at least 7 characters** when creating releases
+6. **Commit SHA must be at least 7 characters** when creating releases (source apps only)
+7. **External image apps** skip the build step — releases are created with status `success` immediately, ready to deploy
+8. **Check app's `build_type`** to determine if it's `"external-image"` or a source build app

@@ -4,7 +4,7 @@ Complete API reference with request/response schemas.
 
 ## Data Models
 
-### App Model
+### App Model (Source Build)
 ```json
 {
   "id": 1,
@@ -30,6 +30,30 @@ Complete API reference with request/response schemas.
   "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+### App Model (External Image)
+```json
+{
+  "id": 2,
+  "name": "my-nginx",
+  "git_url": "",
+  "default_branch": "",
+  "build_type": "external-image",
+  "dockerfile_path": "",
+  "context_path": "",
+  "registry_repo": "nginx",
+  "target_namespace": "default",
+  "target_deploy_name": "my-nginx",
+  "replicas": 1,
+  "service_name": "my-nginx",
+  "service_port": 80,
+  "ingress_enabled": true,
+  "env_vars": [],
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+For external-image apps, `git_url` is empty and `registry_repo` stores the image repository (without tag).
 
 ### Release Model
 ```json
@@ -120,7 +144,7 @@ List all applications.
 ### POST /api/apps
 Create a new application.
 
-**Request:**
+**Request (Source Build):**
 ```json
 {
   "name": "my-app",
@@ -131,6 +155,18 @@ Create a new application.
   "service_port": 8080
 }
 ```
+
+**Request (External Image):**
+```json
+{
+  "name": "my-nginx",
+  "build_type": "external-image",
+  "external_image": "nginx:latest",
+  "service_port": 80
+}
+```
+- For external-image: `external_image` is required, `git_url` must NOT be provided
+- For source builds: `git_url` is required
 
 **Response:** `201 Created`
 ```json
@@ -195,7 +231,9 @@ Get available Git branches.
 ---
 
 ### POST /api/apps/{id}/releases
-Create a new release (trigger a build).
+Create a new release.
+
+**For source build apps** (triggers a build):
 
 **Headers:**
 - `X-Git-Token` (optional): Git access token for private repos
@@ -220,9 +258,30 @@ Create a new release (trigger a build).
 }
 ```
 
+**For external-image apps** (no build, instant success):
+
+**Request:**
+```json
+{
+  "image_tag": "nginx:1.25"
+}
+```
+- `image_tag` (optional): Full image address. Defaults to `{app.registry_repo}:latest`
+
+**Response:** `201 Created`
+```json
+{
+  "id": 2,
+  "app_id": 2,
+  "image_tag": "nginx:1.25",
+  "status": "success",
+  ...
+}
+```
+
 **Errors:**
-- `400`: Invalid commit_sha (must be >= 7 chars)
-- `400`: Dockerfile not found
+- `400`: Invalid commit_sha (must be >= 7 chars, source apps only)
+- `400`: Dockerfile not found (source apps only)
 - `409`: Another release is already running
 
 ---
