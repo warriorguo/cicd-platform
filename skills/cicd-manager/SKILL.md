@@ -185,11 +185,19 @@ Content-Type: application/json
     {"name": "DATABASE_URL", "value": "postgres://..."},
     {"name": "API_KEY", "value": "secret", "is_secret": true}
   ],
-  "maxUnavailable": 25
+  "maxUnavailable": 25,
+  "cpu_request": "50m",
+  "cpu_limit": "200m",
+  "memory_request": "64Mi",
+  "memory_limit": "256Mi"
 }
 ```
 - `env_vars` (optional): Environment variables for the deployment
 - `maxUnavailable` (optional): Max unavailable percentage during rollout, defaults to 25
+- `cpu_request` (optional): CPU request for pod containers, defaults to "50m"
+- `cpu_limit` (optional): CPU limit for pod containers, defaults to "200m"
+- `memory_request` (optional): Memory request for pod containers, defaults to "64Mi"
+- `memory_limit` (optional): Memory limit for pod containers, defaults to "256Mi"
 
 Only releases with status `success` can be deployed.
 
@@ -238,11 +246,19 @@ Content-Type: application/json
   "env_vars": [
     {"name": "NODE_ENV", "value": "production"}
   ],
-  "maxUnavailable": 25
+  "maxUnavailable": 25,
+  "cpu_request": "100m",
+  "cpu_limit": "500m",
+  "memory_request": "128Mi",
+  "memory_limit": "512Mi"
 }
 ```
 - `env_vars` (optional): Updated environment variables (saved to app if provided)
 - `maxUnavailable` (optional): Max unavailable percentage during rollout, defaults to 25
+- `cpu_request` (optional): CPU request for pod containers
+- `cpu_limit` (optional): CPU limit for pod containers
+- `memory_request` (optional): Memory request for pod containers
+- `memory_limit` (optional): Memory limit for pod containers
 
 Restarts all pods by creating a new deploy PipelineRun using the same image as the currently deployed release. Useful for picking up config changes or restarting unhealthy pods. Requires an existing deployed release.
 

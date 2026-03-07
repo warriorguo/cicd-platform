@@ -33,6 +33,22 @@ spec:
       type: string
       description: Optional ServiceAccount for the deployment (leave empty for default)
       default: ""
+    - name: cpu-request
+      type: string
+      description: CPU request for pod containers
+      default: "50m"
+    - name: cpu-limit
+      type: string
+      description: CPU limit for pod containers
+      default: "200m"
+    - name: memory-request
+      type: string
+      description: Memory request for pod containers
+      default: "64Mi"
+    - name: memory-limit
+      type: string
+      description: Memory limit for pod containers
+      default: "256Mi"
 
   tasks:
     - name: update-deployment
@@ -51,6 +67,14 @@ spec:
           - name: SERVICE_PORT
             type: string
           - name: SERVICE_ACCOUNT
+            type: string
+          - name: CPU_REQUEST
+            type: string
+          - name: CPU_LIMIT
+            type: string
+          - name: MEMORY_REQUEST
+            type: string
+          - name: MEMORY_LIMIT
             type: string
         steps:
           - name: update
@@ -88,6 +112,11 @@ spec:
                   kubectl patch deployment $(params.DEPLOYMENT_NAME) -n $(params.NAMESPACE) \
                     -p '{"spec":{"template":{"spec":{"serviceAccountName":"$(params.SERVICE_ACCOUNT)"}}}}'
                 fi
+
+                # Update resource requests and limits
+                echo "Updating resource requests and limits..."
+                kubectl patch deployment $(params.DEPLOYMENT_NAME) -n $(params.NAMESPACE) --type=json \
+                  -p '[{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"$(params.CPU_REQUEST)","memory":"$(params.MEMORY_REQUEST)"},"limits":{"cpu":"$(params.CPU_LIMIT)","memory":"$(params.MEMORY_LIMIT)"}}}]'
               else
                 echo "Deployment does not exist, creating..."
 
@@ -119,11 +148,11 @@ spec:
                       - containerPort: $(params.SERVICE_PORT)
                       resources:
                         requests:
-                          memory: "64Mi"
-                          cpu: "50m"
+                          memory: "$(params.MEMORY_REQUEST)"
+                          cpu: "$(params.CPU_REQUEST)"
                         limits:
-                          memory: "256Mi"
-                          cpu: "200m"
+                          memory: "$(params.MEMORY_LIMIT)"
+                          cpu: "$(params.CPU_LIMIT)"
               ---
               apiVersion: v1
               kind: Service
@@ -178,3 +207,11 @@ spec:
           value: $(params.service-port)
         - name: SERVICE_ACCOUNT
           value: $(params.service-account)
+        - name: CPU_REQUEST
+          value: $(params.cpu-request)
+        - name: CPU_LIMIT
+          value: $(params.cpu-limit)
+        - name: MEMORY_REQUEST
+          value: $(params.memory-request)
+        - name: MEMORY_LIMIT
+          value: $(params.memory-limit)

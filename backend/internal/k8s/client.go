@@ -343,6 +343,10 @@ func (c *Client) CreateDeployPipelineRun(ctx context.Context, req *DeployPipelin
 		{"name": "replicas", "value": fmt.Sprintf("%d", req.Replicas)},
 		{"name": "max-unavailable", "value": fmt.Sprintf("%d%%", req.MaxUnavailable)},
 		{"name": "service-port", "value": fmt.Sprintf("%d", req.ServicePort)},
+		{"name": "cpu-request", "value": req.CPURequest},
+		{"name": "cpu-limit", "value": req.CPULimit},
+		{"name": "memory-request", "value": req.MemoryRequest},
+		{"name": "memory-limit", "value": req.MemoryLimit},
 	}
 
 	// Add environment variables as JSON string

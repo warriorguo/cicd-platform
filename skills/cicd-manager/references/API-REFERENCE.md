@@ -423,9 +423,22 @@ Deploy a successful release.
     {"name": "NODE_ENV", "value": "production"},
     {"name": "API_KEY", "value": "secret", "is_secret": true}
   ],
-  "maxUnavailable": 25
+  "maxUnavailable": 25,
+  "cpu_request": "50m",
+  "cpu_limit": "200m",
+  "memory_request": "64Mi",
+  "memory_limit": "256Mi"
 }
 ```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| env_vars | array | No | [] | Environment variables for the deployment |
+| maxUnavailable | int | No | 25 | Max unavailable percentage during rollout |
+| cpu_request | string | No | "50m" | CPU request for pod containers |
+| cpu_limit | string | No | "200m" | CPU limit for pod containers |
+| memory_request | string | No | "64Mi" | Memory request for pod containers |
+| memory_limit | string | No | "256Mi" | Memory limit for pod containers |
 
 **Response:** `200 OK`
 ```json
@@ -537,10 +550,14 @@ Reload (restart) all pods using the same image as the currently deployed release
     {"name": "NODE_ENV", "value": "production"},
     {"name": "API_KEY", "value": "secret", "is_secret": true}
   ],
-  "maxUnavailable": 25
+  "maxUnavailable": 25,
+  "cpu_request": "100m",
+  "cpu_limit": "500m",
+  "memory_request": "128Mi",
+  "memory_limit": "512Mi"
 }
 ```
-All fields are optional. If `env_vars` is provided, they are saved to the app and used for the new deployment.
+All fields are optional. If `env_vars` or resource settings are provided, they are saved to the app and used for the new deployment.
 
 **Response:** `200 OK`
 ```json

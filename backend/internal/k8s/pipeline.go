@@ -34,6 +34,10 @@ type DeployPipelineRunRequest struct {
 	MaxUnavailable   int
 	ServicePort      int    // Container and service port
 	ServiceAccount   string // Optional ServiceAccount for the deployment
+	CPURequest       string // CPU request (e.g. "50m")
+	CPULimit         string // CPU limit (e.g. "200m")
+	MemoryRequest    string // Memory request (e.g. "64Mi")
+	MemoryLimit      string // Memory limit (e.g. "256Mi")
 }
 
 /*

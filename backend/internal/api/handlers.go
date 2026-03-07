@@ -923,6 +923,10 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 	var req struct {
 		EnvVars        []models.EnvVar `json:"env_vars"`
 		MaxUnavailable int             `json:"maxUnavailable"`
+		CPURequest     string          `json:"cpu_request"`
+		CPULimit       string          `json:"cpu_limit"`
+		MemoryRequest  string          `json:"memory_request"`
+		MemoryLimit    string          `json:"memory_limit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
@@ -940,11 +944,31 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 		return
 	}
 
-	// Save env vars to the app if provided
+	// Save env vars and resource settings to the app if provided
+	appUpdated := false
 	if len(req.EnvVars) > 0 {
 		release.App.EnvVars = req.EnvVars
+		appUpdated = true
+	}
+	if req.CPURequest != "" {
+		release.App.CPURequest = req.CPURequest
+		appUpdated = true
+	}
+	if req.CPULimit != "" {
+		release.App.CPULimit = req.CPULimit
+		appUpdated = true
+	}
+	if req.MemoryRequest != "" {
+		release.App.MemoryRequest = req.MemoryRequest
+		appUpdated = true
+	}
+	if req.MemoryLimit != "" {
+		release.App.MemoryLimit = req.MemoryLimit
+		appUpdated = true
+	}
+	if appUpdated {
 		if err := h.db.Save(&release.App).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save environment variables"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save app settings"})
 			return
 		}
 	}
@@ -997,6 +1021,24 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			deployImageRepo = release.ImageTag[:lastColon]
 		}
 
+		// Use request resource values if provided, otherwise use app's saved values
+		cpuRequest := release.App.CPURequest
+		if req.CPURequest != "" {
+			cpuRequest = req.CPURequest
+		}
+		cpuLimit := release.App.CPULimit
+		if req.CPULimit != "" {
+			cpuLimit = req.CPULimit
+		}
+		memoryRequest := release.App.MemoryRequest
+		if req.MemoryRequest != "" {
+			memoryRequest = req.MemoryRequest
+		}
+		memoryLimit := release.App.MemoryLimit
+		if req.MemoryLimit != "" {
+			memoryLimit = req.MemoryLimit
+		}
+
 		deployReq := &k8s.DeployPipelineRunRequest{
 			AppName:          release.App.Name,
 			ImageRepo:        deployImageRepo,
@@ -1006,8 +1048,12 @@ func (h *Handler) DeployRelease(c *gin.Context) {
 			Replicas:         replicas,
 			EnvVars:          envVars,
 			MaxUnavailable:   maxUnavailable,
-			ServicePort:      release.App.ServicePort,    // Use app's configured service port
-			ServiceAccount:   release.App.ServiceAccount, // Use app's configured service account
+			ServicePort:      release.App.ServicePort,
+			ServiceAccount:   release.App.ServiceAccount,
+			CPURequest:       cpuRequest,
+			CPULimit:         cpuLimit,
+			MemoryRequest:    memoryRequest,
+			MemoryLimit:      memoryLimit,
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)
@@ -1519,6 +1565,10 @@ func (h *Handler) ReloadApp(c *gin.Context) {
 	var req struct {
 		EnvVars        []models.EnvVar `json:"env_vars"`
 		MaxUnavailable int             `json:"maxUnavailable"`
+		CPURequest     string          `json:"cpu_request"`
+		CPULimit       string          `json:"cpu_limit"`
+		MemoryRequest  string          `json:"memory_request"`
+		MemoryLimit    string          `json:"memory_limit"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
@@ -1540,11 +1590,31 @@ func (h *Handler) ReloadApp(c *gin.Context) {
 		return
 	}
 
-	// Save env vars to the app if provided
+	// Save env vars and resource settings to the app if provided
+	appUpdated := false
 	if len(req.EnvVars) > 0 {
 		app.EnvVars = req.EnvVars
+		appUpdated = true
+	}
+	if req.CPURequest != "" {
+		app.CPURequest = req.CPURequest
+		appUpdated = true
+	}
+	if req.CPULimit != "" {
+		app.CPULimit = req.CPULimit
+		appUpdated = true
+	}
+	if req.MemoryRequest != "" {
+		app.MemoryRequest = req.MemoryRequest
+		appUpdated = true
+	}
+	if req.MemoryLimit != "" {
+		app.MemoryLimit = req.MemoryLimit
+		appUpdated = true
+	}
+	if appUpdated {
 		if err := h.db.Save(&app).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save environment variables"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save app settings"})
 			return
 		}
 	}
@@ -1609,6 +1679,10 @@ func (h *Handler) ReloadApp(c *gin.Context) {
 			MaxUnavailable:   maxUnavailable,
 			ServicePort:      app.ServicePort,
 			ServiceAccount:   app.ServiceAccount,
+			CPURequest:       app.CPURequest,
+			CPULimit:         app.CPULimit,
+			MemoryRequest:    app.MemoryRequest,
+			MemoryLimit:      app.MemoryLimit,
 		}
 
 		pipelineRunName, err := h.k8sClient.CreateDeployPipelineRun(c.Request.Context(), deployReq)

@@ -62,6 +62,10 @@ type App struct {
 	IngressEnabled   bool      `json:"ingress_enabled" gorm:"default:true"` // Whether to create Ingress
 	IngressHost      string    `json:"ingress_host"`     // Optional custom host
 	ServiceAccount   string    `json:"service_account"`  // Optional ServiceAccount for the deployment
+	CPURequest       string    `json:"cpu_request" gorm:"default:'50m'"`       // CPU request for pod containers
+	CPULimit         string    `json:"cpu_limit" gorm:"default:'200m'"`        // CPU limit for pod containers
+	MemoryRequest    string    `json:"memory_request" gorm:"default:'64Mi'"`   // Memory request for pod containers
+	MemoryLimit      string    `json:"memory_limit" gorm:"default:'256Mi'"`    // Memory limit for pod containers
 	EnvVars          EnvVars   `json:"env_vars" gorm:"type:jsonb"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`

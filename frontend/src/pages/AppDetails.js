@@ -231,7 +231,11 @@ const AppDetails = ({ onAppDeleted }) => {
     const imageTag = externalImageTag || (app.registry_repo + ':latest');
     externalDeployForm.setFieldsValue({
       maxUnavailable: 25,
-      env_vars: app?.env_vars || []
+      env_vars: app?.env_vars || [],
+      cpu_request: app?.cpu_request || '50m',
+      cpu_limit: app?.cpu_limit || '200m',
+      memory_request: app?.memory_request || '64Mi',
+      memory_limit: app?.memory_limit || '256Mi',
     });
     setExternalDeployModalVisible(true);
   };
@@ -263,7 +267,11 @@ const AppDetails = ({ onAppDeleted }) => {
   const showDeployModal = (releaseId) => {
     setSelectedReleaseId(releaseId);
     deployForm.setFieldsValue({
-      env_vars: app?.env_vars || []
+      env_vars: app?.env_vars || [],
+      cpu_request: app?.cpu_request || '50m',
+      cpu_limit: app?.cpu_limit || '200m',
+      memory_request: app?.memory_request || '64Mi',
+      memory_limit: app?.memory_limit || '256Mi',
     });
     setDeployModalVisible(true);
   };
@@ -280,7 +288,11 @@ const AppDetails = ({ onAppDeleted }) => {
     setSelectedReloadDeployment(deployment);
     reloadForm.setFieldsValue({
       maxUnavailable: 25,
-      env_vars: app?.env_vars || []
+      env_vars: app?.env_vars || [],
+      cpu_request: app?.cpu_request || '50m',
+      cpu_limit: app?.cpu_limit || '200m',
+      memory_request: app?.memory_request || '64Mi',
+      memory_limit: app?.memory_limit || '256Mi',
     });
     setReloadModalVisible(true);
   };
@@ -1113,14 +1125,35 @@ const AppDetails = ({ onAppDeleted }) => {
             rules={[{ required: true, message: 'Please enter rolling update percentage' }]}
             help="Maximum percentage of pods that can be unavailable during the update (default: 25%)"
           >
-            <InputNumber 
-              min={1} 
-              max={100} 
-              style={{ width: '100%' }} 
+            <InputNumber
+              min={1}
+              max={100}
+              style={{ width: '100%' }}
               formatter={value => `${value}%`}
               parser={value => value.replace('%', '')}
               placeholder="25"
             />
+          </Form.Item>
+
+          <Form.Item label="Resource Limits" help="Configure CPU and memory requests/limits for pod containers">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="cpu_request" label="CPU Request" style={{ margin: 0 }}>
+                  <Input placeholder="50m" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="cpu_limit" label="CPU Limit" style={{ margin: 0 }}>
+                  <Input placeholder="200m" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="memory_request" label="Memory Request" style={{ margin: 0 }}>
+                  <Input placeholder="64Mi" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="memory_limit" label="Memory Limit" style={{ margin: 0 }}>
+                  <Input placeholder="256Mi" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+            </Space>
           </Form.Item>
 
           <Form.Item
@@ -1223,6 +1256,27 @@ const AppDetails = ({ onAppDeleted }) => {
               parser={value => value.replace('%', '')}
               placeholder="25"
             />
+          </Form.Item>
+
+          <Form.Item label="Resource Limits" help="Configure CPU and memory requests/limits for pod containers">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="cpu_request" label="CPU Request" style={{ margin: 0 }}>
+                  <Input placeholder="50m" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="cpu_limit" label="CPU Limit" style={{ margin: 0 }}>
+                  <Input placeholder="200m" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="memory_request" label="Memory Request" style={{ margin: 0 }}>
+                  <Input placeholder="64Mi" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="memory_limit" label="Memory Limit" style={{ margin: 0 }}>
+                  <Input placeholder="256Mi" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+            </Space>
           </Form.Item>
 
           <Form.Item
@@ -1329,6 +1383,27 @@ const AppDetails = ({ onAppDeleted }) => {
               parser={value => value.replace('%', '')}
               placeholder="25"
             />
+          </Form.Item>
+
+          <Form.Item label="Resource Limits" help="Configure CPU and memory requests/limits for pod containers">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="cpu_request" label="CPU Request" style={{ margin: 0 }}>
+                  <Input placeholder="50m" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="cpu_limit" label="CPU Limit" style={{ margin: 0 }}>
+                  <Input placeholder="200m" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+              <Space style={{ display: 'flex' }}>
+                <Form.Item name="memory_request" label="Memory Request" style={{ margin: 0 }}>
+                  <Input placeholder="64Mi" style={{ width: 120 }} />
+                </Form.Item>
+                <Form.Item name="memory_limit" label="Memory Limit" style={{ margin: 0 }}>
+                  <Input placeholder="256Mi" style={{ width: 120 }} />
+                </Form.Item>
+              </Space>
+            </Space>
           </Form.Item>
 
           <Form.Item
