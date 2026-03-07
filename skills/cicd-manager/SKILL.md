@@ -389,7 +389,23 @@ curl -X POST {CICD_API_URL}/api/releases/{release_id}/deploy \
 curl {CICD_API_URL}/api/apps/{app_id}/deployments
 ```
 
-### 5. Scale a Deployment
+### 5. Deploy with Custom Resource Limits
+
+```bash
+# Deploy with specific CPU and memory settings
+curl -X POST {CICD_API_URL}/api/releases/{release_id}/deploy \
+  -H "Content-Type: application/json" \
+  -d '{"cpu_request": "100m", "cpu_limit": "500m", "memory_request": "128Mi", "memory_limit": "512Mi"}'
+
+# Reload pods with updated resource limits
+curl -X POST {CICD_API_URL}/api/apps/{app_id}/reload \
+  -H "Content-Type: application/json" \
+  -d '{"cpu_request": "200m", "cpu_limit": "1000m", "memory_request": "256Mi", "memory_limit": "1Gi"}'
+```
+
+Resource settings are saved to the app and reused in subsequent deploys unless overridden.
+
+### 6. Scale a Deployment
 
 ```bash
 # Scale up

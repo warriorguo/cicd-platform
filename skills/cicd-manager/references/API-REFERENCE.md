@@ -25,6 +25,10 @@ Complete API reference with request/response schemas.
   "service_account": "",
   "ingress_enabled": true,
   "ingress_host": "",
+  "cpu_request": "50m",
+  "cpu_limit": "200m",
+  "memory_request": "64Mi",
+  "memory_limit": "256Mi",
   "env_vars": [],
   "created_at": "2024-01-15T10:30:00Z",
   "updated_at": "2024-01-15T10:30:00Z"
@@ -48,6 +52,10 @@ Complete API reference with request/response schemas.
   "service_name": "my-nginx",
   "service_port": 80,
   "ingress_enabled": true,
+  "cpu_request": "50m",
+  "cpu_limit": "200m",
+  "memory_request": "64Mi",
+  "memory_limit": "256Mi",
   "env_vars": [],
   "created_at": "2024-01-15T10:30:00Z",
   "updated_at": "2024-01-15T10:30:00Z"

@@ -12,7 +12,7 @@
 #   build <app_id> <sha> [branch]     Trigger build
 #   build-status <release_id>         Get build status
 #   build-logs <release_id>           Get build logs
-#   deploy <release_id>               Deploy release
+#   deploy <release_id> [cpu_req] [cpu_lim] [mem_req] [mem_lim]  Deploy release
 #   deployments <app_id>              Get deployment info
 #   scale <app_id> <replicas>         Scale deployment
 #   logs <app_id> <pod_name>          Get pod logs
@@ -59,9 +59,13 @@ case "$COMMAND" in
     ;;
 
   deploy)
+    DEPLOY_DATA='{}'
+    if [ -n "$2" ]; then
+      DEPLOY_DATA="{\"cpu_request\":\"$2\",\"cpu_limit\":\"${3:-200m}\",\"memory_request\":\"${4:-64Mi}\",\"memory_limit\":\"${5:-256Mi}\"}"
+    fi
     curl -s -X POST "$BASE_URL/api/releases/$1/deploy" \
       -H "Content-Type: application/json" \
-      -d '{}' | jq .
+      -d "$DEPLOY_DATA" | jq .
     ;;
 
   deployments)
@@ -105,7 +109,7 @@ case "$COMMAND" in
     echo "  build <app_id> <sha> [branch]     Trigger build"
     echo "  build-status <release_id>         Get build status"
     echo "  build-logs <release_id>           Get build logs"
-    echo "  deploy <release_id>               Deploy release"
+    echo "  deploy <release_id> [cpu_req] [cpu_lim] [mem_req] [mem_lim]  Deploy release"
     echo "  deployments <app_id>              Get deployment info"
     echo "  scale <app_id> <replicas>         Scale deployment"
     echo "  logs <app_id> <pod_name>          Get pod logs"

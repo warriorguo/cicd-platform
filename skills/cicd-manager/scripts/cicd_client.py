@@ -17,7 +17,7 @@ Commands:
   build-status <release_id>              Get build status
   build-logs <release_id> [stage]        Get build logs
 
-  deploy <release_id>                    Deploy a release
+  deploy <release_id> [cpu_req] [cpu_lim] [mem_req] [mem_lim]  Deploy a release
   rollback <release_id>                  Rollback to a release
   get-deployments <app_id>               Get deployment status
   scale <app_id> <replicas>              Scale a deployment
@@ -138,11 +138,19 @@ def get_build_logs(base_url, release_id, stage=None):
     print(json.dumps(result, indent=2))
 
 
-def deploy_release(base_url, release_id, env_vars=None):
+def deploy_release(base_url, release_id, env_vars=None, cpu_request=None, cpu_limit=None, memory_request=None, memory_limit=None):
     """Deploy a release."""
     data = {}
     if env_vars:
         data['env_vars'] = env_vars
+    if cpu_request:
+        data['cpu_request'] = cpu_request
+    if cpu_limit:
+        data['cpu_limit'] = cpu_limit
+    if memory_request:
+        data['memory_request'] = memory_request
+    if memory_limit:
+        data['memory_limit'] = memory_limit
     result = make_request(base_url, 'POST', f'/api/releases/{release_id}/deploy', data)
     print(json.dumps(result, indent=2))
     return result
@@ -247,7 +255,11 @@ def main():
         'build-logs': lambda: get_build_logs(base_url, args[0], args[1] if len(args) > 1 else None),
         'wait-build': lambda: wait_for_build(base_url, args[0]),
 
-        'deploy': lambda: deploy_release(base_url, args[0]),
+        'deploy': lambda: deploy_release(base_url, args[0],
+                                         cpu_request=args[1] if len(args) > 1 else None,
+                                         cpu_limit=args[2] if len(args) > 2 else None,
+                                         memory_request=args[3] if len(args) > 3 else None,
+                                         memory_limit=args[4] if len(args) > 4 else None),
         'rollback': lambda: rollback_release(base_url, args[0]),
         'get-deployments': lambda: get_deployments(base_url, args[0]),
         'scale': lambda: scale_deployment(base_url, args[0], args[1]),
