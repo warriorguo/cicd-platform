@@ -315,11 +315,35 @@ Returns Ingress configuration and URL for the app.
 
 ---
 
+## Pre-flight Git Check
+
+**Before triggering any build or deploy**, always check that the local repository is in sync with the remote. Run these commands in the project directory:
+
+```bash
+# Check for uncommitted changes (staged, unstaged, untracked)
+git status
+
+# Check for local commits not yet pushed to remote
+git log origin/{branch}..HEAD --oneline
+```
+
+**What to look for:**
+- If `git status` shows modified or untracked files that should be part of this build, **stop and ask the user** to commit/stash them first.
+- If `git log origin/{branch}..HEAD` shows commits, those commits haven't been pushed — the CI/CD build will not include them. **Warn the user** and confirm they want to proceed or push first.
+
+If the working directory is clean and all commits are pushed, proceed with the CI/CD workflow.
+
+---
+
 ## Common Workflows
 
 ### 1. Build and Deploy a New Version
 
 ```bash
+# 0. Pre-flight: verify git is clean and pushed
+git status
+git log origin/main..HEAD --oneline
+
 # 1. Trigger a build
 curl -X POST {CICD_API_URL}/api/apps/{app_id}/releases \
   -H "Content-Type: application/json" \
@@ -443,10 +467,11 @@ Error responses follow this format:
 ## Tips for AI Agents
 
 1. **Always get the API URL first** before making any API calls
-2. **Poll build status** every 5-10 seconds when waiting for builds
-3. **Check release status is "success"** before attempting to deploy
-4. **Use pod describe** for debugging failing pods - it shows events
-5. **Build logs are available per-stage** - check stages first to find failures
-6. **Commit SHA must be at least 7 characters** when creating releases (source apps only)
-7. **External image apps** skip the build step — releases are created with status `success` immediately, ready to deploy
-8. **Check app's `build_type`** to determine if it's `"external-image"` or a source build app
+2. **Run pre-flight git check** before triggering builds: verify no uncommitted files and all commits are pushed (`git status` + `git log origin/{branch}..HEAD --oneline`). Warn the user and pause if the repo is dirty or has unpushed commits.
+3. **Poll build status** every 5-10 seconds when waiting for builds
+4. **Check release status is "success"** before attempting to deploy
+5. **Use pod describe** for debugging failing pods - it shows events
+6. **Build logs are available per-stage** - check stages first to find failures
+7. **Commit SHA must be at least 7 characters** when creating releases (source apps only)
+8. **External image apps** skip the build step — releases are created with status `success` immediately, ready to deploy
+9. **Check app's `build_type`** to determine if it's `"external-image"` or a source build app
